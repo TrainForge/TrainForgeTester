@@ -7,7 +7,7 @@ import pytest
 import requests
 import responses
 
-from trainforge.agent_client import AgentClient, Message
+from trainforge.agent_client import AgentClient, Message, Role
 from trainforge.errors import AgentError, AgentTimeoutError, AgentUnreachableError
 
 
@@ -15,7 +15,7 @@ AGENT_URL = "http://agent.test/chat"
 
 
 def _user(content: str) -> Message:
-    return Message(role="user", content=content)
+    return Message(role=Role.USER, content=content)
 
 
 @responses.activate
@@ -48,7 +48,7 @@ def test_tool_call_reply_parsed() -> None:
     assert reply.tool_calls[0].name == "check_weather"
     assert reply.tool_calls[0].arguments == {"when": "tonight"}
     assert reply.tool_calls[0].id == "call_42"
-    assert reply.tool_calls[1].id is None
+    assert reply.tool_calls[1].id is None  # optional field
 
 
 @responses.activate
@@ -134,7 +134,7 @@ def test_sends_full_history() -> None:
     responses.post(AGENT_URL, json={"response": "ok"}, status=200)
     history: list[Message] = [
         _user("book a table"),
-        Message(role="agent", content="for how many?"),
+        Message(role=Role.AGENT, content="for how many?"),
         _user("2 please"),
     ]
     AgentClient(url=AGENT_URL).chat(history)

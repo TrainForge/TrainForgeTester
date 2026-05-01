@@ -55,7 +55,8 @@ trainforge mock-agent \
   --port 8080
 
 # Terminal 2 - run the scenarios against it
-export ANTHROPIC_API_KEY=sk-ant-...
+export OPENAI_API_URL=https://api.openai.com/v1
+export OPENAI_API_KEY=sk-...
 trainforge run \
   --scenarios scenarios/example_restaurant_booking.json \
   --agent-url http://localhost:8080/chat \

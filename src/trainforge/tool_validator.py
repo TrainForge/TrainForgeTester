@@ -11,9 +11,14 @@ this module's job is to classify.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Literal
 
-from trainforge.schema import ExpectedTool, ToolArgumentSchema, ToolLoop
+from trainforge.schema import (
+    ArgumentType,
+    ExpectedTool,
+    ToolArgumentSchema,
+    ToolCallStatus,
+    ToolLoop,
+)
 
 
 @dataclass(frozen=True)
@@ -80,21 +85,21 @@ def validate_arguments(
 
 def _value_matches_type(value: object, schema: ToolArgumentSchema) -> bool:
     t = schema.type
-    if t == "any":
+    if t == ArgumentType.ANY:
         return True
-    if t == "string":
+    if t == ArgumentType.STRING:
         return isinstance(value, str)
-    if t == "integer":
+    if t == ArgumentType.INTEGER:
         return isinstance(value, int) and not isinstance(value, bool)
-    if t == "number":
+    if t == ArgumentType.NUMBER:
         return isinstance(value, (int, float)) and not isinstance(value, bool)
-    if t == "boolean":
+    if t == ArgumentType.BOOLEAN:
         return isinstance(value, bool)
-    if t == "array":
+    if t == ArgumentType.ARRAY:
         return isinstance(value, list)
-    if t == "object":
+    if t == ArgumentType.OBJECT:
         return isinstance(value, dict)
-    return False  # pragma: no cover - Literal exhausts options
+    return False  # pragma: no cover - enum exhausts options
 
 
 # ---------------------------------------------------------------------------
@@ -123,7 +128,7 @@ class MatchDecision:
     agent_call: AgentToolCall
     expected_position: int | None
     matched_tool: ExpectedTool | None
-    status: Literal["pass", "wrong_tool", "invalid_arguments", "unexpected_tool"]
+    status: ToolCallStatus
     explanation: str = ""
 
 
@@ -194,7 +199,7 @@ class LoopMatcher:
                 agent_call=ac,
                 expected_position=None,
                 matched_tool=None,
-                status="unexpected_tool",
+                status=ToolCallStatus.UNEXPECTED_TOOL,
                 explanation="agent emitted tool_call after all expected tools were already matched",
             )
         position = self.pending_positions[0]
@@ -208,7 +213,7 @@ class LoopMatcher:
                 agent_call=ac,
                 expected_position=position,
                 matched_tool=expected,
-                status="wrong_tool",
+                status=ToolCallStatus.WRONG_TOOL,
                 explanation=f"ordered loop expected {expected.name!r} at position {position}, agent called {ac.name!r}",
             )
         validation = validate_arguments(expected, ac.arguments)
@@ -218,14 +223,14 @@ class LoopMatcher:
                 agent_call=ac,
                 expected_position=position,
                 matched_tool=expected,
-                status="invalid_arguments",
+                status=ToolCallStatus.INVALID_ARGUMENTS,
                 explanation=validation.explanation,
             )
         return MatchDecision(
             agent_call=ac,
             expected_position=position,
             matched_tool=expected,
-            status="pass",
+            status=ToolCallStatus.PASS,
         )
 
     def _unordered_step(self, ac: AgentToolCall) -> MatchDecision:
@@ -240,14 +245,14 @@ class LoopMatcher:
                         agent_call=ac,
                         expected_position=position,
                         matched_tool=candidate,
-                        status="invalid_arguments",
+                        status=ToolCallStatus.INVALID_ARGUMENTS,
                         explanation=validation.explanation,
                     )
                 return MatchDecision(
                     agent_call=ac,
                     expected_position=position,
                     matched_tool=candidate,
-                    status="pass",
+                    status=ToolCallStatus.PASS,
                 )
         # No pending tool has this name. If the loop is fully consumed, it's
         # unexpected; otherwise it's wrong_tool -- but we still consume the
@@ -258,7 +263,7 @@ class LoopMatcher:
                 agent_call=ac,
                 expected_position=None,
                 matched_tool=None,
-                status="unexpected_tool",
+                status=ToolCallStatus.UNEXPECTED_TOOL,
                 explanation="agent emitted tool_call after all expected tools were already matched",
             )
         pending_names = [self.loop.tools[p].name for p in self.pending_positions]
@@ -268,7 +273,7 @@ class LoopMatcher:
             agent_call=ac,
             expected_position=position,
             matched_tool=expected,
-            status="wrong_tool",
+            status=ToolCallStatus.WRONG_TOOL,
             explanation=(
                 f"unordered loop expected one of {pending_names!r}, "
                 f"agent called {ac.name!r}"

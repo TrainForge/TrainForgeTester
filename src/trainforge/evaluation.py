@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
+from enum import Enum
 
 from trainforge.errors import EvaluationError
 from trainforge.llm.base import LLMClient
@@ -28,6 +29,25 @@ from trainforge.llm.prompts import (
     build_outcome_eval_prompt,
     build_turn_eval_prompt,
 )
+
+
+try:
+    from enum import StrEnum
+except ImportError:  # pragma: no cover - Python < 3.11
+    class StrEnum(str, Enum):
+        pass
+
+
+class DivergenceType(StrEnum):
+    NONE = "none"
+    FACTUAL_DIFFERENCE = "factual_difference"
+    STYLE_DIFFERENCE = "style_difference"
+    MISSING_INFORMATION = "missing_information"
+    EXTRA_INFORMATION = "extra_information"
+    WRONG_ACTION = "wrong_action"
+
+
+_VALID_DIVERGENCE_TYPES = {member.value for member in DivergenceType}
 
 
 @dataclass(frozen=True)

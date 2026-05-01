@@ -367,9 +367,8 @@ def test_run_without_api_key_and_without_factory_errors(
 ) -> None:
     monkeypatch.setattr(cli_module, "_LLM_CLIENT_FACTORY", None)
     monkeypatch.setattr(cli_module, "find_dotenv", lambda usecwd=True: "")
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    monkeypatch.delenv("NVIDIA_API_KEY", raising=False)
-    monkeypatch.delenv("CEREBRAS_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_URL", raising=False)
 
     runner = CliRunner()
     result = runner.invoke(

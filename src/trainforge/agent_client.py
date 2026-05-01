@@ -11,11 +11,11 @@ for tool_calls using OpenAI-style function-calling shape):
 
 Message variants (order preserved in ``messages``):
 
-- user:         {"role": "user",  "content": str}
-- agent text:   {"role": "agent", "content": str}
-- agent tool:   {"role": "agent", "content": str | None,
+- user:         {"role": "user", "content": str}
+- agent text:   {"role": "agent",    "content": str}
+- agent tool:   {"role": "agent",    "content": str | None,
                   "tool_calls": [{"id": str, "name": str, "arguments": dict}, ...]}
-- tool result:  {"role": "tool",  "tool_call_id": str, "name": str, "content": str}
+- tool result:  {"role": "tool", "tool_call_id": str, "name": str, "content": str}
 
 ToolCall shape (in both requests and responses):
     {"id": str, "name": str, "arguments": dict}
@@ -29,14 +29,25 @@ Error handling follows the spec's "Error Handling" table:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Literal, TypedDict
+from enum import Enum
+from typing import Any, TypedDict
 
 import requests
 
 from trainforge.errors import AgentError, AgentTimeoutError, AgentUnreachableError
 from trainforge.tool_validator import AgentToolCall
 
-Role = Literal["user", "agent", "tool"]
+try:
+    from enum import StrEnum
+except ImportError:  # pragma: no cover - Python < 3.11
+    class StrEnum(str, Enum):
+        pass
+
+
+class Role(StrEnum):
+    USER = "user"
+    AGENT = "agent"
+    TOOL = "tool"
 
 
 class Message(TypedDict, total=False):

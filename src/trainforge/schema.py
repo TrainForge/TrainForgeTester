@@ -22,8 +22,9 @@ shape rather than stored state):
 from __future__ import annotations
 
 import json
+from enum import Enum
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
@@ -40,7 +41,21 @@ class _StrictModel(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-ArgumentType = Literal["string", "integer", "number", "boolean", "array", "object", "any"]
+try:
+    from enum import StrEnum
+except ImportError:  # pragma: no cover - Python < 3.11
+    class StrEnum(str, Enum):
+        pass
+
+
+class ArgumentType(StrEnum):
+    STRING = "string"
+    INTEGER = "integer"
+    NUMBER = "number"
+    BOOLEAN = "boolean"
+    ARRAY = "array"
+    OBJECT = "object"
+    ANY = "any"
 
 
 class ToolArgumentSchema(_StrictModel):
@@ -58,7 +73,7 @@ class ToolArgumentSchema(_StrictModel):
       rewrite your agent / test accordingly.
     """
 
-    type: ArgumentType = "any"
+    type: ArgumentType = ArgumentType.ANY
     description: str = ""
     expected: Any = None
     """Optional literal. If non-None, the agent's value must ``==`` it."""
@@ -103,14 +118,34 @@ class ToolLoop(_StrictModel):
 # ---------------------------------------------------------------------------
 
 
-class UserTurn(_StrictModel):
-    role: Literal["user"]
+class CustomerRole(StrEnum):
+    USER = "user"
+
+
+class AgentRole(StrEnum):
+    AGENT = "agent"
+
+
+class TurnRole(StrEnum):
+    USER = "user"
+    AGENT = "agent"
+
+
+class CustomerTurn(_StrictModel):
+    role: CustomerRole
     message: str
     intent: str = ""
 
+    @field_validator("role", mode="before")
+    @classmethod
+    def _accept_legacy_customer(cls, v: object) -> object:
+        if v == "customer":
+            return CustomerRole.USER
+        return v
+
 
 class AgentTurn(_StrictModel):
-    role: Literal["agent"]
+    role: AgentRole
     tool_loops: list[ToolLoop] = Field(default_factory=list)
     """Zero or more tool loops that must complete before the text response."""
     golden_response: str
@@ -148,7 +183,7 @@ class Scenario(_StrictModel):
     ) -> list[Turn]:
         if not turns:
             raise ValueError("scenario must have at least one turn")
-        expected: tuple[str, ...] = ("user", "agent")
+        expected: tuple[TurnRole, ...] = (TurnRole.USER, TurnRole.AGENT)
         for i, t in enumerate(turns):
             want = expected[i % 2]
             if t.role != want:
@@ -184,13 +219,12 @@ class CheckResult(_StrictModel):
     explanation: str = ""
 
 
-ToolCallStatus = Literal[
-    "pass",
-    "wrong_tool",
-    "invalid_arguments",
-    "unexpected_tool",
-    "missing",
-]
+class ToolCallStatus(StrEnum):
+    PASS = "pass"
+    WRONG_TOOL = "wrong_tool"
+    INVALID_ARGUMENTS = "invalid_arguments"
+    UNEXPECTED_TOOL = "unexpected_tool"
+    MISSING = "missing"
 
 
 class ToolCallRecord(_StrictModel):
@@ -221,13 +255,12 @@ class ToolCallRecord(_StrictModel):
     explanation: str = ""
 
 
-TurnStatus = Literal[
-    "evaluated",
-    "agent_error",
-    "agent_timeout",
-    "eval_error",
-    "empty_response",
-]
+class TurnStatus(StrEnum):
+    EVALUATED = "evaluated"
+    AGENT_ERROR = "agent_error"
+    AGENT_TIMEOUT = "agent_timeout"
+    EVAL_ERROR = "eval_error"
+    EMPTY_RESPONSE = "empty_response"
 
 
 class StandardCheckResult(_StrictModel):
@@ -253,7 +286,7 @@ class TurnResult(_StrictModel):
     may_diverge: bool
     divergence_note: str | None = None
     tool_calls: list[ToolCallRecord] = Field(default_factory=list)
-    status: TurnStatus = "evaluated"
+    status: TurnStatus = TurnStatus.EVALUATED
 
     # Text-equivalence verdict.
     exact_match: bool | None = None
@@ -268,21 +301,23 @@ class TurnResult(_StrictModel):
     error: str | None = None
 
 
-OutcomeStatus = Literal["evaluated", "eval_error", "agent_unreachable"]
+class OutcomeStatus(StrEnum):
+    EVALUATED = "evaluated"
+    EVAL_ERROR = "eval_error"
+    AGENT_UNREACHABLE = "agent_unreachable"
 
 
 class OutcomeResult(_StrictModel):
-    status: OutcomeStatus = "evaluated"
+    status: OutcomeStatus = OutcomeStatus.EVALUATED
     checks: list[CheckResult] = Field(default_factory=list)
     error: str | None = None
 
 
-ScenarioStatus = Literal[
-    "pass",
-    "partial_pass",
-    "fail",
-    "agent_unreachable",
-]
+class ScenarioStatus(StrEnum):
+    PASS = "pass"
+    PARTIAL_PASS = "partial_pass"
+    FAIL = "fail"
+    AGENT_UNREACHABLE = "agent_unreachable"
 
 
 class ScenarioRunResult(_StrictModel):

@@ -19,9 +19,10 @@ Defaults are tuned for speed on classification workloads:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from importlib import import_module
 from typing import Any
 
-from trainforge.llm.base import NVIDIA_DEFAULT_MODEL
+from trainforge.llm.base import OPENAI_COMPAT_DEFAULT_MODEL
 
 
 @dataclass
@@ -29,8 +30,8 @@ class OpenAICompatibleClient:
     """Thin wrapper over ``openai.OpenAI`` for evaluator ``complete(system, user)``."""
 
     api_key: str
-    base_url: str = "https://integrate.api.nvidia.com/v1"
-    model: str = NVIDIA_DEFAULT_MODEL
+    base_url: str = "https://api.openai.com/v1"
+    model: str = OPENAI_COMPAT_DEFAULT_MODEL
     max_tokens: int = 1024
     timeout_seconds: float = 60.0
     temperature: float = 0.0
@@ -42,9 +43,10 @@ class OpenAICompatibleClient:
     _client: Any = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
-        from openai import OpenAI  # type: ignore[import-not-found]
+        openai_mod = import_module("openai")
+        openai_cls = getattr(openai_mod, "OpenAI")
 
-        self._client = OpenAI(
+        self._client = openai_cls(
             base_url=self.base_url,
             api_key=self.api_key,
             timeout=self.timeout_seconds,

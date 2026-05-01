@@ -27,11 +27,13 @@ import random
 import threading
 import time
 import uuid
+from enum import Enum
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Literal
+from typing import Any, cast
 
 from trainforge.schema import (
     AgentTurn,
+    ArgumentType,
     UserTurn,
     ExpectedTool,
     Scenario,
@@ -41,8 +43,20 @@ from trainforge.schema import (
 
 log = logging.getLogger(__name__)
 
-Mode = Literal["golden", "diverge", "error"]
-MODES: tuple[Mode, ...] = ("golden", "diverge", "error")
+try:
+    from enum import StrEnum
+except ImportError:  # pragma: no cover - Python < 3.11
+    class StrEnum(str, Enum):
+        pass
+
+
+class Mode(StrEnum):
+    GOLDEN = "golden"
+    DIVERGE = "diverge"
+    ERROR = "error"
+
+
+MODES: tuple[Mode, ...] = (Mode.GOLDEN, Mode.DIVERGE, Mode.ERROR)
 
 
 class MockAgentServer:
@@ -54,27 +68,31 @@ class MockAgentServer:
         *,
         port: int = 8080,
         host: str = "127.0.0.1",
-        mode: Mode = "golden",
+        mode: Mode | str = Mode.GOLDEN,
         error_rate: float = 0.5,
         timeout_rate: float = 0.25,
         seed: int | None = None,
     ) -> None:
-        if mode not in MODES:
-            raise ValueError(f"mode must be one of {MODES}, got {mode!r}")
+        try:
+            parsed_mode = mode if isinstance(mode, Mode) else Mode(mode)
+        except ValueError as exc:
+            raise ValueError(
+                f"mode must be one of {[m.value for m in MODES]}, got {mode!r}"
+            ) from exc
         scenarios_file = load_scenarios(scenarios_path)
         self._scenario_index = _build_scenario_index(scenarios_file.scenarios)
         handler_cls = _make_handler(
             scenario_index=self._scenario_index,
-            mode=mode,
+            mode=parsed_mode,
             error_rate=error_rate,
             timeout_rate=timeout_rate,
             rng=random.Random(seed),
         )
-        self._server = ThreadingHTTPServer((host, port), handler_cls)
+        self._server = ThreadingHTTPServer((host, port), cast(Any, handler_cls))
         self._thread: threading.Thread | None = None
         self.port = self._server.server_address[1]
         self.host = host
-        self.mode = mode
+        self.mode = parsed_mode
 
     @property
     def url(self) -> str:
@@ -87,7 +105,7 @@ class MockAgentServer:
             target=self._server.serve_forever, daemon=True, name="trainforge-mock-agent"
         )
         self._thread.start()
-        log.info("mock-agent (%s) listening on %s", self.mode, self.url)
+        log.info("mock-agent (%s) listening on %s", self.mode.value, self.url)
 
     def stop(self) -> None:
         if self._thread is None:
@@ -99,7 +117,7 @@ class MockAgentServer:
 
     def serve_forever(self) -> None:
         """Blocking server loop; used by the CLI."""
-        log.info("mock-agent (%s) listening on %s", self.mode, self.url)
+        log.info("mock-agent (%s) listening on %s", self.mode.value, self.url)
         try:
             self._server.serve_forever()
         finally:
@@ -147,7 +165,7 @@ def _plan_response(
     if position is None:
         # All tool_calls are done (or the turn has none). Return golden text.
         text = agent_turn.golden_response
-        if mode == "diverge":
+        if mode == Mode.DIVERGE:
             text = _perturb_text(text, rng)
         return {"response": text}
 
@@ -155,8 +173,7 @@ def _plan_response(
     loop = agent_turn.tool_loops[loop_idx]
     expected = loop.tools[tool_pos]
     call = _expected_to_call(expected, mode=mode, rng=rng)
-    text_field = "" if mode != "diverge" else ""
-    return {"response": text_field, "tool_calls": [call]}
+    return {"response": "", "tool_calls": [call]}
 
 
 def _pending_tool_position(
@@ -170,7 +187,7 @@ def _pending_tool_position(
     """
     last_user = -1
     for i, msg in enumerate(history):
-        if msg.get("role") == "user":
+        if _is_user_role(msg.get("role")):
             last_user = i
 
     tool_rounds = 0
@@ -192,7 +209,7 @@ def _expected_to_call(
 ) -> dict:
     args = _fill_arguments(expected.arguments_schema, rng=rng)
     name = expected.name
-    if mode == "diverge":
+    if mode == Mode.DIVERGE:
         name, args = _perturb_tool_call(expected, args, rng)
     return {
         "id": f"call_{uuid.uuid4().hex[:12]}",
@@ -222,18 +239,18 @@ def _fill_arguments(
     return args
 
 
-def _sample(t: str, rng: random.Random) -> object:
-    if t == "string":
+def _sample(t: ArgumentType, rng: random.Random) -> object:
+    if t == ArgumentType.STRING:
         return rng.choice(["example", "sample", "demo"])
-    if t == "integer":
+    if t == ArgumentType.INTEGER:
         return rng.randint(1, 10)
-    if t == "number":
+    if t == ArgumentType.NUMBER:
         return round(rng.uniform(0.0, 100.0), 2)
-    if t == "boolean":
+    if t == ArgumentType.BOOLEAN:
         return bool(rng.getrandbits(1))
-    if t == "array":
+    if t == ArgumentType.ARRAY:
         return []
-    if t == "object":
+    if t == ArgumentType.OBJECT:
         return {}
     return "value"
 
@@ -286,7 +303,7 @@ def _make_handler(
     error_rate: float,
     timeout_rate: float,
     rng: random.Random,
-):
+) -> type[BaseHTTPRequestHandler]:
     """Factory because :class:`BaseHTTPRequestHandler` doesn't accept deps."""
 
     class _Handler(BaseHTTPRequestHandler):
@@ -327,12 +344,12 @@ def _make_handler(
                 )
                 return
 
-            if mode == "error":
+            if mode == Mode.ERROR:
                 roll = rng.random()
                 if roll < timeout_rate:
                     time.sleep(45.0)
                     try:
-                        self._send_json(200, _plan_response(agent_turn, messages, "golden", rng))
+                        self._send_json(200, _plan_response(agent_turn, messages, Mode.GOLDEN, rng))
                     except Exception:  # pragma: no cover
                         pass
                     return
@@ -351,13 +368,17 @@ def _make_handler(
             self.end_headers()
             self.wfile.write(data)
 
-    return _Handler
+    return cast(type[BaseHTTPRequestHandler], _Handler)
 
 
 def _last_user_content(messages: list[dict]) -> str | None:
     for msg in reversed(messages):
-        if isinstance(msg, dict) and msg.get("role") == "user":
+        if isinstance(msg, dict) and _is_user_role(msg.get("role")):
             content = msg.get("content")
             if isinstance(content, str):
                 return content
     return None
+
+
+def _is_user_role(value: object) -> bool:
+    return value in {"user", "customer"}

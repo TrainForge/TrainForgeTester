@@ -135,11 +135,13 @@ def test_load_invalid_json(tmp_path: Path) -> None:
 def test_results_roundtrip(tmp_path: Path) -> None:
     from trainforge.schema import (
         OutcomeResult,
+        OutcomeStatus,
         RunConfig,
         RunResults,
         RunSummary,
         ScenarioResult,
         ScenarioRunResult,
+        ScenarioStatus,
         dump_results,
         load_results,
     )
@@ -165,9 +167,9 @@ def test_results_roundtrip(tmp_path: Path) -> None:
                 runs=[
                     ScenarioRunResult(
                         run_index=0,
-                        status="pass",
+                        status=ScenarioStatus.PASS,
                         turns=[],
-                        outcome=OutcomeResult(status="evaluated", checks=[]),
+                        outcome=OutcomeResult(status=OutcomeStatus.EVALUATED, checks=[]),
                     )
                 ],
                 consistency=1.0,
@@ -183,3 +185,23 @@ def test_results_roundtrip(tmp_path: Path) -> None:
     again = json.loads(path.read_text())
     assert again["summary"]["passed"] == 1
     assert again["version"] == "2.0"
+
+
+def test_legacy_customer_role_is_accepted_and_normalized() -> None:
+    raw = {
+        "version": "1.0",
+        "scenarios": [
+            {
+                "id": "legacy",
+                "name": "legacy",
+                "turns": [
+                    {"role": "customer", "message": "hi"},
+                    {"role": "agent", "golden_response": "ok", "checks": []},
+                ],
+                "expected_outcome": "x",
+            }
+        ],
+    }
+    parsed = parse_scenarios(raw)
+    assert parsed.scenarios[0].turns[0].role == "user"
+

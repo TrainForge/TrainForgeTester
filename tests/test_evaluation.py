@@ -6,7 +6,23 @@ import json
 import pytest
 
 from trainforge.errors import EvaluationError
-from trainforge.evaluation import evaluate_outcome, evaluate_turn
+from trainforge.evaluation import (
+    _VALID_DIVERGENCE_TYPES,
+    evaluate_outcome,
+    evaluate_turn,
+)
+
+
+def _turn_payload(score: int, divergence: str, checks: list[tuple[str, bool]]) -> str:
+    return json.dumps(
+        {
+            "consistency_score": score,
+            "divergence_type": divergence,
+            "checks": [
+                {"check": c[0], "pass": c[1], "explanation": ""} for c in checks
+            ],
+        }
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -16,6 +32,18 @@ from trainforge.evaluation import evaluate_outcome, evaluate_turn
 
 def _compact(r: list[int], f: dict[str, str] | None = None) -> str:
     return json.dumps({"r": r, "f": f or {}})
+
+
+def test_valid_divergence_set_matches_spec() -> None:
+    expected = {
+        "none",
+        "factual_difference",
+        "style_difference",
+        "missing_information",
+        "extra_information",
+        "wrong_action",
+    }
+    assert _VALID_DIVERGENCE_TYPES == expected
 
 
 def test_turn_eval_happy_path(fake_llm) -> None:

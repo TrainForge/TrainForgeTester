@@ -16,19 +16,25 @@ Scenario identity is ``scenario_id``; names are used only for display.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Literal
+from enum import Enum
 
 from trainforge.schema import RunResults, ScenarioResult
 
-Bucket = Literal[
-    "newly_passing",
-    "newly_failing",
-    "still_passing",
-    "still_failing",
-    "consistency_changed",
-    "only_in_before",
-    "only_in_after",
-]
+try:
+    from enum import StrEnum
+except ImportError:  # pragma: no cover - Python < 3.11
+    class StrEnum(str, Enum):
+        pass
+
+
+class Bucket(StrEnum):
+    NEWLY_PASSING = "newly_passing"
+    NEWLY_FAILING = "newly_failing"
+    STILL_PASSING = "still_passing"
+    STILL_FAILING = "still_failing"
+    CONSISTENCY_CHANGED = "consistency_changed"
+    ONLY_IN_BEFORE = "only_in_before"
+    ONLY_IN_AFTER = "only_in_after"
 
 
 @dataclass(frozen=True)
@@ -106,10 +112,10 @@ def compute_diff(
         a = after_by_id.get(scenario_id)
 
         if b is None and a is not None:
-            report.only_in_after.append(_diff_entry(a, bucket="only_in_after", side="after"))
+            report.only_in_after.append(_diff_entry(a, bucket=Bucket.ONLY_IN_AFTER, side="after"))
             continue
         if a is None and b is not None:
-            report.only_in_before.append(_diff_entry(b, bucket="only_in_before", side="before"))
+            report.only_in_before.append(_diff_entry(b, bucket=Bucket.ONLY_IN_BEFORE, side="before"))
             continue
         assert a is not None and b is not None
 
@@ -117,17 +123,17 @@ def compute_diff(
         a_pass = _pass_flag(a)
 
         if b_pass and not a_pass:
-            bucket: Bucket = "newly_failing"
+            bucket: Bucket = Bucket.NEWLY_FAILING
         elif not b_pass and a_pass:
-            bucket = "newly_passing"
+            bucket = Bucket.NEWLY_PASSING
         else:
             moved = abs(a.consistency - b.consistency) >= consistency_epsilon
             if moved:
-                bucket = "consistency_changed"
+                bucket = Bucket.CONSISTENCY_CHANGED
             elif b_pass and a_pass:
-                bucket = "still_passing"
+                bucket = Bucket.STILL_PASSING
             else:
-                bucket = "still_failing"
+                bucket = Bucket.STILL_FAILING
 
         entry = ScenarioDiff(
             scenario_id=scenario_id,
@@ -138,7 +144,7 @@ def compute_diff(
             before_consistency=b.consistency,
             after_consistency=a.consistency,
         )
-        getattr(report, bucket).append(entry)
+        getattr(report, bucket.value).append(entry)
 
     return report
 
