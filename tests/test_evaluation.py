@@ -110,11 +110,10 @@ def test_outcome_eval_happy_path(fake_llm) -> None:
     fake_llm.queue_outcome([("o1", True, ""), ("o2", False, "not found")])
     result = evaluate_outcome(
         fake_llm,
-        conversation=[{"role": "customer", "content": "hi"}],
+        conversation=[{"role": "user", "content": "hi"}],
         expected_outcome="booking confirmed",
         outcome_checks=["o1", "o2"],
     )
     assert [c.passed for c in result.checks] == [True, False]
     assert result.checks[1].explanation == "not found"
-
 

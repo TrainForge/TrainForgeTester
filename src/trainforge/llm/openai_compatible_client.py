@@ -16,6 +16,7 @@ Defaults are tuned for speed on classification workloads:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from importlib import import_module
 from typing import Any
 
 from trainforge.llm.base import NVIDIA_DEFAULT_MODEL
@@ -39,9 +40,10 @@ class OpenAICompatibleClient:
     _client: Any = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
-        from openai import OpenAI  # type: ignore[import-not-found]
+        openai_mod = import_module("openai")
+        openai_cls = getattr(openai_mod, "OpenAI")
 
-        self._client = OpenAI(
+        self._client = openai_cls(
             base_url=self.base_url,
             api_key=self.api_key,
             timeout=self.timeout_seconds,

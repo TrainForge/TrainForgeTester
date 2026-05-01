@@ -49,3 +49,6 @@ results.json
 *.results.json
 report.html
 regression-report.html
+
+# .env
+.env

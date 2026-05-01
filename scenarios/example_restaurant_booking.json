@@ -10,7 +10,7 @@
 
       "turns": [
         {
-          "role": "customer",
+          "role": "user",
           "message": "Hi, I'd like to book a table for tonight",
           "intent": "initiate_booking"
         },
@@ -24,7 +24,7 @@
           "may_diverge": false
         },
         {
-          "role": "customer",
+          "role": "user",
           "message": "2 people, around 7pm. How's the weather looking for outdoor seating?",
           "intent": "provide_booking_details_and_ask_weather"
         },
@@ -65,7 +65,7 @@
           "divergence_note": "Weather and availability come from tools; the STRUCTURE (report weather + recommend seating) matters, not the specific details."
         },
         {
-          "role": "customer",
+          "role": "user",
           "message": "OK, indoor sounds good. Can I get the corner table?",
           "intent": "confirm_indoor_seating_request_specific_table"
         },

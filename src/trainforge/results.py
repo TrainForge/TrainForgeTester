@@ -36,7 +36,7 @@ def build_run_results(
             runs=runs,
             timeout_seconds=timeout_seconds,
         ),
-        summary=RunSummary(**summary),  # type: ignore[arg-type]
+        summary=RunSummary.model_validate(summary),
         scenarios=scenario_list,
     )
 

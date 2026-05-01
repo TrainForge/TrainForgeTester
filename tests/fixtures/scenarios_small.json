@@ -9,7 +9,7 @@
       "tags": ["booking"],
       "turns": [
         {
-          "role": "customer",
+          "role": "user",
           "message": "Book a table for 2 at 7pm",
           "intent": "initiate_booking"
         },
@@ -23,7 +23,7 @@
           "may_diverge": false
         },
         {
-          "role": "customer",
+          "role": "user",
           "message": "Thanks!",
           "intent": "thank_and_close"
         },

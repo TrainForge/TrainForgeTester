@@ -30,7 +30,7 @@ def test_golden_mode_returns_exact_golden(golden_server, small_scenarios) -> Non
 
     resp = requests.post(
         golden_server.url,
-        json={"messages": [{"role": "customer", "content": first_customer}]},
+        json={"messages": [{"role": "user", "content": first_customer}]},
         timeout=5.0,
     )
     assert resp.status_code == 200
@@ -40,7 +40,7 @@ def test_golden_mode_returns_exact_golden(golden_server, small_scenarios) -> Non
 def test_unknown_customer_message_returns_404(golden_server) -> None:
     resp = requests.post(
         golden_server.url,
-        json={"messages": [{"role": "customer", "content": "totally unknown"}]},
+        json={"messages": [{"role": "user", "content": "totally unknown"}]},
         timeout=5.0,
     )
     assert resp.status_code == 404
@@ -61,7 +61,7 @@ def test_diverge_mode_returns_perturbed(small_scenarios_path: Path, small_scenar
         first_golden = small_scenarios["scenarios"][0]["turns"][1]["golden_response"]
         resp = requests.post(
             server.url,
-            json={"messages": [{"role": "customer", "content": first_customer}]},
+            json={"messages": [{"role": "user", "content": first_customer}]},
             timeout=5.0,
         )
         assert resp.status_code == 200
@@ -85,7 +85,7 @@ def test_error_mode_eventually_returns_error_status(small_scenarios_path: Path, 
         first_customer = small_scenarios["scenarios"][0]["turns"][0]["message"]
         resp = requests.post(
             server.url,
-            json={"messages": [{"role": "customer", "content": first_customer}]},
+            json={"messages": [{"role": "user", "content": first_customer}]},
             timeout=5.0,
         )
         assert resp.status_code == 500
@@ -112,7 +112,7 @@ def test_golden_mock_emits_tool_calls_for_tool_loops(tools_server) -> None:
     # Round 1: empty history -> mock should emit a tool_call for loop 0.
     resp = requests.post(
         tools_server.url,
-        json={"messages": [{"role": "customer", "content": customer_msg}]},
+        json={"messages": [{"role": "user", "content": customer_msg}]},
         timeout=5.0,
     )
     assert resp.status_code == 200
@@ -126,7 +126,7 @@ def test_golden_mock_emits_tool_calls_for_tool_loops(tools_server) -> None:
 def test_golden_mock_advances_after_tool_responses(tools_server) -> None:
     customer_msg = "Book me a table for 2 at 7pm, indoor if it's raining."
     history = [
-        {"role": "customer", "content": customer_msg},
+        {"role": "user", "content": customer_msg},
         {
             "role": "agent",
             "content": "",
@@ -151,7 +151,7 @@ def test_golden_mock_advances_after_tool_responses(tools_server) -> None:
 def test_golden_mock_emits_final_text_after_all_tools(tools_server) -> None:
     customer_msg = "Book me a table for 2 at 7pm, indoor if it's raining."
     history = [
-        {"role": "customer", "content": customer_msg},
+        {"role": "user", "content": customer_msg},
         {
             "role": "agent",
             "content": "",

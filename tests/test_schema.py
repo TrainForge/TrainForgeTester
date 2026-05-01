@@ -32,7 +32,7 @@ def test_example_scenario_from_spec_parses(example_scenarios_path: Path) -> None
 def test_small_fixture_parses(small_scenarios_path: Path) -> None:
     file = load_scenarios(small_scenarios_path)
     assert len(file.scenarios) == 1
-    assert file.scenarios[0].turns[0].role == "customer"
+    assert file.scenarios[0].turns[0].role == "user"
 
 
 def test_version_mismatch_raises() -> None:
@@ -41,7 +41,7 @@ def test_version_mismatch_raises() -> None:
         parse_scenarios(raw)
 
 
-def test_turns_must_start_with_customer() -> None:
+def test_turns_must_start_with_user() -> None:
     raw = {
         "version": "1.0",
         "scenarios": [
@@ -67,8 +67,8 @@ def test_turns_must_alternate() -> None:
                 "id": "bad",
                 "name": "bad",
                 "turns": [
-                    {"role": "customer", "message": "hi"},
-                    {"role": "customer", "message": "hi again"},
+                    {"role": "user", "message": "hi"},
+                    {"role": "user", "message": "hi again"},
                 ],
                 "expected_outcome": "x",
             }
@@ -86,7 +86,7 @@ def test_unknown_field_is_rejected() -> None:
                 "id": "bad",
                 "name": "bad",
                 "turns": [
-                    {"role": "customer", "message": "hi", "bogus": "x"},
+                    {"role": "user", "message": "hi", "bogus": "x"},
                     {"role": "agent", "golden_response": "ok", "checks": []},
                 ],
                 "expected_outcome": "x",
@@ -112,11 +112,13 @@ def test_load_invalid_json(tmp_path: Path) -> None:
 def test_results_roundtrip(tmp_path: Path) -> None:
     from trainforge.schema import (
         OutcomeResult,
+        OutcomeStatus,
         RunConfig,
         RunResults,
         RunSummary,
         ScenarioResult,
         ScenarioRunResult,
+        ScenarioStatus,
         dump_results,
         load_results,
     )
@@ -144,9 +146,9 @@ def test_results_roundtrip(tmp_path: Path) -> None:
                 runs=[
                     ScenarioRunResult(
                         run_index=0,
-                        status="pass",
+                        status=ScenarioStatus.PASS,
                         turns=[],
-                        outcome=OutcomeResult(status="evaluated", checks=[]),
+                        outcome=OutcomeResult(status=OutcomeStatus.EVALUATED, checks=[]),
                     )
                 ],
                 consistency=1.0,
@@ -162,3 +164,23 @@ def test_results_roundtrip(tmp_path: Path) -> None:
     # Ensure it round-trips to stable JSON.
     again = json.loads(path.read_text())
     assert again["summary"]["passed"] == 1
+
+
+def test_legacy_customer_role_is_accepted_and_normalized() -> None:
+    raw = {
+        "version": "1.0",
+        "scenarios": [
+            {
+                "id": "legacy",
+                "name": "legacy",
+                "turns": [
+                    {"role": "customer", "message": "hi"},
+                    {"role": "agent", "golden_response": "ok", "checks": []},
+                ],
+                "expected_outcome": "x",
+            }
+        ],
+    }
+    parsed = parse_scenarios(raw)
+    assert parsed.scenarios[0].turns[0].role == "user"
+

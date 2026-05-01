@@ -9,7 +9,7 @@
       "tags": ["tools"],
       "turns": [
         {
-          "role": "customer",
+          "role": "user",
           "message": "Book me a table for 2 at 7pm, indoor if it's raining.",
           "intent": "initiate_booking_with_weather_check"
         },
