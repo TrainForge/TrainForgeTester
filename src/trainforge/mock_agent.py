@@ -173,8 +173,7 @@ def _plan_response(
     loop = agent_turn.tool_loops[loop_idx]
     expected = loop.tools[tool_pos]
     call = _expected_to_call(expected, mode=mode, rng=rng)
-    text_field = "" if mode != Mode.DIVERGE else ""
-    return {"response": text_field, "tool_calls": [call]}
+    return {"response": "", "tool_calls": [call]}
 
 
 def _pending_tool_position(
