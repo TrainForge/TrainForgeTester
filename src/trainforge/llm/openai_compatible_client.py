@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from importlib import import_module
 from typing import Any
 
-from trainforge.llm.base import NVIDIA_DEFAULT_MODEL
+from trainforge.llm.base import OPENAI_COMPAT_DEFAULT_MODEL
 
 
 @dataclass
@@ -27,8 +27,8 @@ class OpenAICompatibleClient:
     """Thin wrapper over ``openai.OpenAI`` for evaluator ``complete(system, user)``."""
 
     api_key: str
-    base_url: str = "https://integrate.api.nvidia.com/v1"
-    model: str = NVIDIA_DEFAULT_MODEL
+    base_url: str = "https://api.openai.com/v1"
+    model: str = OPENAI_COMPAT_DEFAULT_MODEL
     max_tokens: int = 512
     timeout_seconds: float = 60.0
     temperature: float = 0.0

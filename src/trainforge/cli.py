@@ -13,7 +13,6 @@ import logging
 import os
 import sys
 from collections.abc import Callable
-from enum import Enum
 from pathlib import Path
 
 import click
@@ -23,12 +22,7 @@ from trainforge import __version__
 from trainforge.agent_client import AgentClient
 from trainforge.diff import compute_diff
 from trainforge.errors import MalformedScenarioError, UnsupportedScenarioVersionError
-from trainforge.llm.base import (
-    CEREBRAS_DEFAULT_MODEL,
-    DEFAULT_MODEL,
-    LLMClient,
-    NVIDIA_DEFAULT_MODEL,
-)
+from trainforge.llm.base import LLMClient, OPENAI_COMPAT_DEFAULT_MODEL
 from trainforge.mock_agent import MODES as MOCK_MODES, MockAgentServer
 from trainforge.report import render_diff_html, render_report_html
 from trainforge.results import build_run_results, write_results
@@ -36,20 +30,6 @@ from trainforge.runner import ScenarioRunner
 from trainforge.schema import load_results, load_scenarios
 
 log = logging.getLogger("trainforge")
-
-
-try:
-    from enum import StrEnum
-except ImportError:  # pragma: no cover - Python < 3.11
-    class StrEnum(str, Enum):
-        pass
-
-
-class LLMProvider(StrEnum):
-    AUTO = "auto"
-    ANTHROPIC = "anthropic"
-    NVIDIA = "nvidia"
-    CEREBRAS = "cerebras"
 
 
 _LLM_CLIENT_FACTORY: Callable[..., LLMClient] | None = None
@@ -107,27 +87,26 @@ def _load_dotenv_from_tree() -> None:
 @click.option("--scenarios", "scenarios_path", type=click.Path(exists=True, dir_okay=False), required=True)
 @click.option("--agent-url", required=True, help="POST endpoint of the agent under test.")
 @click.option(
-    "--llm-provider",
-    type=click.Choice([p.value for p in LLMProvider]),
-    default="auto",
-    show_default=True,
+    "--llm-api-url",
+    default=None,
+    envvar="OPENAI_API_URL",
     help=(
-        "Evaluator LLM: Anthropic, NVIDIA, Cerebras, or auto. Auto order: "
-        "Anthropic if $ANTHROPIC_API_KEY/--llm-api-key; else Cerebras if "
-        "$CEREBRAS_API_KEY/--cerebras-api-key; else NVIDIA if "
-        "$NVIDIA_API_KEY/--nvidia-api-key."
+        "Base URL for an OpenAI-compatible API (for example, https://api.openai.com/v1). "
+        "You can also set it via $OPENAI_API_URL."
     ),
 )
-@click.option("--llm-api-key", envvar="ANTHROPIC_API_KEY", help="Anthropic API key. Uses $ANTHROPIC_API_KEY.")
-@click.option("--nvidia-api-key", envvar="NVIDIA_API_KEY", help="NVIDIA API key. Uses $NVIDIA_API_KEY.")
-@click.option("--cerebras-api-key", envvar="CEREBRAS_API_KEY", help="Cerebras API key. Uses $CEREBRAS_API_KEY.")
+@click.option(
+    "--llm-api-key",
+    default=None,
+    envvar="OPENAI_API_KEY",
+    help=(
+        "API key for the OpenAI-compatible provider. You can also set it via $OPENAI_API_KEY."
+    ),
+)
 @click.option(
     "--llm-model",
     default=None,
-    help=(
-        f"Evaluator model id. Defaults: {DEFAULT_MODEL!r} (Anthropic), "
-        f"{NVIDIA_DEFAULT_MODEL!r} (NVIDIA), {CEREBRAS_DEFAULT_MODEL!r} (Cerebras)."
-    ),
+    help=f"Evaluator model ID. Default: {OPENAI_COMPAT_DEFAULT_MODEL!r}.",
 )
 @click.option("--runs", type=click.IntRange(min=1), default=1, show_default=True, help="Number of runs per scenario for consistency.")
 @click.option("--timeout", "timeout_seconds", type=click.FloatRange(min=1.0), default=30.0, show_default=True, help="Per-request agent timeout in seconds.")
@@ -135,10 +114,8 @@ def _load_dotenv_from_tree() -> None:
 def run_cmd(
     scenarios_path: str,
     agent_url: str,
-    llm_provider: str,
+    llm_api_url: str | None,
     llm_api_key: str | None,
-    nvidia_api_key: str | None,
-    cerebras_api_key: str | None,
     llm_model: str | None,
     runs: int,
     timeout_seconds: float,
@@ -152,15 +129,10 @@ def run_cmd(
     except MalformedScenarioError as exc:
         raise click.ClickException(f"malformed scenarios: {exc}") from exc
 
-    provider = _resolve_llm_provider(
-        llm_provider, llm_api_key, nvidia_api_key, cerebras_api_key
-    )
-    resolved_model = llm_model or _default_model_for(provider)
+    resolved_model = llm_model or OPENAI_COMPAT_DEFAULT_MODEL
     llm = _build_llm_client(
-        provider,
+        llm_api_url=llm_api_url,
         llm_api_key=llm_api_key,
-        nvidia_api_key=nvidia_api_key,
-        cerebras_api_key=cerebras_api_key,
         model=resolved_model,
     )
     agent = AgentClient(url=agent_url, timeout_seconds=timeout_seconds)
@@ -307,86 +279,43 @@ def mock_agent_cmd(scenarios_path: str, port: int, host: str, mode: str) -> None
 # ---------------------------------------------------------------------------
 
 
-def _default_model_for(provider: str) -> str:
-    if provider == "nvidia":
-        return NVIDIA_DEFAULT_MODEL
-    if provider == "cerebras":
-        return CEREBRAS_DEFAULT_MODEL
-    return DEFAULT_MODEL
-
-
-def _resolve_llm_provider(
-    llm_provider: str,
-    llm_api_key: str | None,
-    nvidia_api_key: str | None,
-    cerebras_api_key: str | None,
-) -> str:
-    """Pick a provider in ``auto`` mode.
-
-    Priority: explicit Anthropic key -> Cerebras (fastest if available) ->
-    NVIDIA -> fall back to ``anthropic`` so the error message is helpful.
-    """
-    if llm_provider != "auto":
-        return llm_provider
-    if llm_api_key or os.environ.get("ANTHROPIC_API_KEY"):
-        return "anthropic"
-    if cerebras_api_key or os.environ.get("CEREBRAS_API_KEY"):
-        return "cerebras"
-    if nvidia_api_key or os.environ.get("NVIDIA_API_KEY"):
-        return "nvidia"
-    return "anthropic"
-
-
 def _build_llm_client(
-    provider: str,
     *,
+    llm_api_url: str | None,
     llm_api_key: str | None,
-    nvidia_api_key: str | None,
-    cerebras_api_key: str | None,
     model: str,
 ) -> LLMClient:
     factory = _LLM_CLIENT_FACTORY
     if factory is not None:
-        key = llm_api_key or cerebras_api_key or nvidia_api_key
-        return factory(api_key=key, model=model)
+        return factory(api_key=llm_api_key, model=model)
 
-    if provider == "nvidia":
-        key = nvidia_api_key or os.environ.get("NVIDIA_API_KEY")
-        if not key:
-            raise click.ClickException(
-                "missing LLM API key for NVIDIA; pass --nvidia-api-key or set $NVIDIA_API_KEY"
-            )
-        from trainforge.llm.openai_compatible_client import OpenAICompatibleClient
-
-        return OpenAICompatibleClient(
-            api_key=key,
-            base_url="https://integrate.api.nvidia.com/v1",
-            model=model,
-        )
-
-    if provider == "cerebras":
-        key = cerebras_api_key or os.environ.get("CEREBRAS_API_KEY")
-        if not key:
-            raise click.ClickException(
-                "missing LLM API key for Cerebras; pass --cerebras-api-key or set $CEREBRAS_API_KEY"
-            )
-        from trainforge.llm.openai_compatible_client import OpenAICompatibleClient
-
-        return OpenAICompatibleClient(
-            api_key=key,
-            base_url="https://api.cerebras.ai/v1",
-            model=model,
-        )
-
-    key = llm_api_key or os.environ.get("ANTHROPIC_API_KEY")
+    key = _resolve_llm_api_key(llm_api_key)
     if not key:
         raise click.ClickException(
-            "missing LLM API key for Anthropic; pass --llm-api-key or set $ANTHROPIC_API_KEY, "
-            "or use --llm-provider cerebras/nvidia with the corresponding key"
+            "missing LLM API key; pass --llm-api-key or set $OPENAI_API_KEY"
         )
-    from trainforge.llm.anthropic_client import AnthropicClient
 
-    return AnthropicClient(api_key=key, model=model)
+    base_url = _resolve_llm_api_url(llm_api_url)
+    if not base_url:
+        raise click.ClickException(
+            "missing LLM API URL; pass --llm-api-url or set $OPENAI_API_URL"
+        )
+
+    from trainforge.llm.openai_compatible_client import OpenAICompatibleClient
+
+    return OpenAICompatibleClient(
+        api_key=key,
+        base_url=base_url,
+        model=model,
+    )
+
+
+def _resolve_llm_api_key(llm_api_key: str | None) -> str | None:
+    return llm_api_key or os.environ.get("OPENAI_API_KEY")
+
+
+def _resolve_llm_api_url(llm_api_url: str | None) -> str | None:
+    return llm_api_url or os.environ.get("OPENAI_API_URL")
 
 
 if __name__ == "__main__":  # pragma: no cover
