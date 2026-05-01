@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from importlib import import_module
 
-from trainforge.llm.base import DEFAULT_MODEL
+from trainforge.llm.base import OPENAI_COMPAT_DEFAULT_MODEL
 
 
 @dataclass
@@ -22,7 +22,7 @@ class AnthropicClient:
     """
 
     api_key: str
-    model: str = DEFAULT_MODEL
+    model: str = OPENAI_COMPAT_DEFAULT_MODEL
     max_tokens: int = 1024
 
     def __post_init__(self) -> None:
