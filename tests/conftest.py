@@ -35,13 +35,13 @@ def tools_scenarios_path() -> Path:
 
 
 class FakeLLM:
-    """In-memory ``LLMClient`` that returns whatever responses the test queues.
+    """In-memory ``LLMClient`` returning queued responses in order.
 
-    Use :meth:`queue_turn_pass_all` / :meth:`queue_turn_fail_all` / etc. to
-    avoid constructing raw JSON strings in every test.
+    All evaluators in v0.2 speak the compact ``{"r": [...], "f": {...}}``
+    format, so test helpers center on that shape.
     """
 
-    model = "fake-llm-1.0"
+    model = "fake-llm-2.0"
 
     def __init__(self) -> None:
         self._responses: list[str] = []
@@ -60,35 +60,25 @@ class FakeLLM:
         self._responses.append(raw)
         return self
 
-    def queue_turn(
+    def queue_compact(
         self,
-        *,
-        consistency_score: int,
-        divergence_type: str = "none",
-        checks: list[tuple[str, bool, str]] | None = None,
+        results: list[int | bool],
+        failures: dict[str, str] | None = None,
     ) -> "FakeLLM":
-        payload = {
-            "consistency_score": consistency_score,
-            "divergence_type": divergence_type,
-            "checks": [
-                {"check": c[0], "pass": c[1], "explanation": c[2]}
-                for c in (checks or [])
-            ],
-        }
-        self._responses.append(json.dumps(payload))
+        """Queue one compact-format response.
+
+        ``results`` is the positional 1/0 (or True/False) array. ``failures``
+        is a dict from 1-based index strings to brief reasons; pass
+        explanations only for the indices set to 0/False.
+        """
+        self._responses.append(
+            json.dumps({"r": results, "f": failures or {}})
+        )
         return self
 
-    def queue_outcome(
-        self, checks: list[tuple[str, bool, str]]
-    ) -> "FakeLLM":
-        payload = {
-            "checks": [
-                {"check": c[0], "pass": c[1], "explanation": c[2]}
-                for c in checks
-            ],
-        }
-        self._responses.append(json.dumps(payload))
-        return self
+    def queue_all_pass(self, n: int) -> "FakeLLM":
+        """Shortcut: ``n`` ones, no failures."""
+        return self.queue_compact([1] * n)
 
 
 @pytest.fixture

@@ -14,10 +14,10 @@ Message types in the conversation history (the union is enforced by
 :mod:`trainforge.agent_client`, not pydantic, because the history is wire
 shape rather than stored state):
 
-- ``{"role": "user", "content": str}``
-- ``{"role": "agent",    "content": str}``
-- ``{"role": "agent",    "content": str | None, "tool_calls": [ToolCall, ...]}``
-- ``{"role": "tool",     "tool_call_id": str, "name": str, "content": str}``
+- ``{"role": "user",  "content": str}``
+- ``{"role": "agent", "content": str}``
+- ``{"role": "agent", "content": str | None, "tool_calls": [ToolCall, ...]}``
+- ``{"role": "tool",  "tool_call_id": str, "name": str, "content": str}``
 """
 from __future__ import annotations
 
@@ -118,7 +118,7 @@ class ToolLoop(_StrictModel):
 # ---------------------------------------------------------------------------
 
 
-class CustomerRole(StrEnum):
+class UserRole(StrEnum):
     USER = "user"
 
 
@@ -131,8 +131,8 @@ class TurnRole(StrEnum):
     AGENT = "agent"
 
 
-class CustomerTurn(_StrictModel):
-    role: CustomerRole
+class UserTurn(_StrictModel):
+    role: UserRole
     message: str
     intent: str = ""
 
@@ -140,22 +140,30 @@ class CustomerTurn(_StrictModel):
     @classmethod
     def _accept_legacy_customer(cls, v: object) -> object:
         if v == "customer":
-            return CustomerRole.USER
+            return UserRole.USER
         return v
 
 
 class AgentTurn(_StrictModel):
     role: AgentRole
     tool_loops: list[ToolLoop] = Field(default_factory=list)
-    """Zero or more tool loops that must complete before the text response.
-    Scenarios without any tool_loops behave exactly like pre-v1.1 scenarios."""
+    """Zero or more tool loops that must complete before the text response."""
     golden_response: str
     checks: list[str] = Field(default_factory=list)
+    """Per-scenario natural-language checks (LLM-evaluated as binary). Run
+    in addition to the :mod:`trainforge.standard_checks` battery whenever
+    ``may_diverge=True``. Run regardless when ``may_diverge=False`` (along
+    with the deterministic exact-match check)."""
     may_diverge: bool = False
+    """Default ``False``: the actual agent reply must equal ``golden_response``
+    exactly (Python ``==``). Use this for curated/scripted replies (legal
+    disclaimers, fixed FAQ answers). Set ``True`` to allow the agent to
+    rephrase; the runner then evaluates the 20 standard NLP-consistency
+    checks via LLM instead of doing string equality."""
     divergence_note: str | None = None
 
 
-Turn = CustomerTurn | AgentTurn
+Turn = UserTurn | AgentTurn
 
 
 class Scenario(_StrictModel):
@@ -255,21 +263,41 @@ class TurnStatus(StrEnum):
     EMPTY_RESPONSE = "empty_response"
 
 
+class StandardCheckResult(_StrictModel):
+    """One binary standard NLP-consistency-check result.
+
+    Carries the stable ``id`` from :mod:`trainforge.standard_checks` plus
+    the LLM's binary verdict and (for failures) a short explanation."""
+
+    id: str
+    """Stable identifier from ``STANDARD_CHECKS``."""
+    question: str
+    """Verbatim text of the check (denormalized so reports are self-contained)."""
+    passed: bool
+    explanation: str = ""
+
+
 class TurnResult(_StrictModel):
     turn_index: int
     """Index of the agent turn within ``scenario.turns``."""
-    customer_message: str
+    user_message: str
     golden_response: str
     actual_response: str
     may_diverge: bool
     divergence_note: str | None = None
     tool_calls: list[ToolCallRecord] = Field(default_factory=list)
     status: TurnStatus = TurnStatus.EVALUATED
-    consistency_score: int | None = None
-    """1-5 per spec. None on error / empty response."""
-    divergence_type: str | None = None
+
+    # Text-equivalence verdict.
+    exact_match: bool | None = None
+    """When ``may_diverge=False``: ``True`` if ``actual_response == golden_response``,
+    else ``False``. ``None`` when ``may_diverge=True`` (no exact-match check is run).
+    """
+    standard_check_results: list[StandardCheckResult] = Field(default_factory=list)
+    """The 20 standard NLP-consistency check verdicts. Populated only when
+    ``may_diverge=True``; empty otherwise."""
     checks: list[CheckResult] = Field(default_factory=list)
-    diverged: bool = False
+    """Per-scenario custom check verdicts (always run when there are any)."""
     error: str | None = None
 
 
@@ -328,10 +356,15 @@ class RunSummary(_StrictModel):
     inconsistent: int
     pass_rate: float
     overall_consistency: float
-    unexpected_divergences: int
-    expected_divergences: int
     tool_call_failures: int = 0
     """Total tool_calls across all scenarios/runs with status != pass."""
+    exact_match_failures: int = 0
+    """Turns with ``may_diverge=False`` where ``actual_response != golden_response``."""
+    standard_check_failures: int = 0
+    """Total standard NLP-consistency-check verdicts that returned 0 across
+    all may_diverge=True turns."""
+    custom_check_failures: int = 0
+    """Total per-scenario custom check verdicts that returned 0."""
 
 
 class RunResults(_StrictModel):

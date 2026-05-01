@@ -1,31 +1,27 @@
-"""Scoring rules from testing-spec-v1.md section "Evaluation & Scoring".
+"""Scenario PASS / PARTIAL / FAIL classification (v0.2 deterministic-first).
 
-Kept in one small module so the PASS / PARTIAL / FAIL table is unambiguous
-and easy to unit-test.
+A run PASSes when ALL of:
 
-Rules (verbatim from spec):
+1. Outcome checks all pass (LLM-judged).
+2. Every agent turn is "clean":
+   - All ``tool_calls`` have status ``pass`` (deterministic).
+   - Either ``exact_match=True`` (deterministic, when may_diverge=False)
+     OR every ``standard_check_results`` entry passes (LLM-judged binary).
+   - Every per-scenario custom ``checks`` entry passes (LLM-judged binary).
 
-    Scenario PASS if:
-      - ALL checks on non-divergent turns pass
-      - ALL outcome_checks pass
-      - Divergences on may_diverge turns are NOT counted as failures
+A run PARTIAL_PASSes when the OUTCOME checks pass but at least one turn
+is not clean. (Same intent as v0.1: agent reached the right end-state
+but took a weird path.)
 
-    Scenario PARTIAL PASS if:
-      - outcome_checks pass (agent reached the right result)
-      - BUT some non-divergent turn checks failed (agent took a weird path)
+A run FAILs otherwise (any outcome check fails, or scenario aborted with
+agent_unreachable mid-way).
 
-    Scenario FAIL if:
-      - Any outcome_check fails (agent did not reach the right result)
+Consistency:
+    Per-scenario consistency = passing_runs / N
+    Flag INCONSISTENT if consistency < 80% AND runs > 1.
 
-    Consistency:
-      Per-scenario consistency = (runs where scenario PASSED) / N
-      Flag as INCONSISTENT if consistency < 80%
-
-v1.1 addition: a turn's tool_calls are treated like checks for PASS/PARTIAL
-classification. A turn is considered fully successful only when every
-``ToolCallRecord`` has status ``pass`` (alongside its non-divergent LLM
-checks). ``may_diverge`` covers *text* divergence only; wrong tool calls
-always count against the run.
+This module is the single place these rules live. Test it directly via
+:mod:`tests.test_scoring` rather than testing scoring through the runner.
 """
 from __future__ import annotations
 
@@ -49,12 +45,11 @@ def classify_scenario_run(
         return "agent_unreachable"
 
     outcome_ok = outcome.status == "evaluated" and all(c.passed for c in outcome.checks)
+    turns_clean = all(_turn_is_clean(t) for t in turn_results)
 
-    turn_checks_ok = _all_non_divergent_turn_checks_pass(turn_results)
-
-    if outcome_ok and turn_checks_ok:
+    if outcome_ok and turns_clean:
         return "pass"
-    if outcome_ok and not turn_checks_ok:
+    if outcome_ok and not turns_clean:
         return "partial_pass"
     return "fail"
 
@@ -62,8 +57,8 @@ def classify_scenario_run(
 def aggregate_consistency(runs: list[ScenarioRunResult]) -> tuple[float, bool]:
     """Return ``(pass_rate, inconsistent?)`` across ``runs``.
 
-    ``inconsistent`` is only meaningful when there are multiple runs;
-    single-run scenarios are never flagged inconsistent.
+    ``inconsistent`` only meaningful with multiple runs; single-run scenarios
+    are never flagged inconsistent.
     """
     if not runs:
         return 0.0, False
@@ -74,13 +69,7 @@ def aggregate_consistency(runs: list[ScenarioRunResult]) -> tuple[float, bool]:
 
 
 def summarize(scenarios: list[ScenarioResult]) -> dict[str, int | float]:
-    """Build a dict suitable for :class:`trainforge.schema.RunSummary`.
-
-    Uses the *best* run per scenario for pass/partial/fail bucketing
-    (i.e. a scenario counts as "passed" if it passed in at least one run;
-    "inconsistent" is carried separately). Pass rate is the fraction of
-    scenarios with at least one passing run.
-    """
+    """Build a dict suitable for :class:`trainforge.schema.RunSummary`."""
     total = len(scenarios)
     passed = 0
     partial = 0
@@ -88,9 +77,10 @@ def summarize(scenarios: list[ScenarioResult]) -> dict[str, int | float]:
     unreachable = 0
     inconsistent = 0
     pass_rates: list[float] = []
-    unexpected_div = 0
-    expected_div = 0
     tool_failures = 0
+    exact_match_failures = 0
+    standard_check_failures = 0
+    custom_check_failures = 0
 
     for sc in scenarios:
         pass_rates.append(sc.consistency)
@@ -111,12 +101,14 @@ def summarize(scenarios: list[ScenarioResult]) -> dict[str, int | float]:
                 for tc in turn.tool_calls:
                     if tc.status != "pass":
                         tool_failures += 1
-                if not turn.diverged:
-                    continue
-                if turn.may_diverge:
-                    expected_div += 1
-                else:
-                    unexpected_div += 1
+                if turn.exact_match is False:
+                    exact_match_failures += 1
+                for sr in turn.standard_check_results:
+                    if not sr.passed:
+                        standard_check_failures += 1
+                for c in turn.checks:
+                    if not c.passed:
+                        custom_check_failures += 1
 
     pass_rate = (passed / total) if total else 0.0
     overall_consistency = (sum(pass_rates) / len(pass_rates)) if pass_rates else 0.0
@@ -130,9 +122,10 @@ def summarize(scenarios: list[ScenarioResult]) -> dict[str, int | float]:
         "inconsistent": inconsistent,
         "pass_rate": pass_rate,
         "overall_consistency": overall_consistency,
-        "unexpected_divergences": unexpected_div,
-        "expected_divergences": expected_div,
         "tool_call_failures": tool_failures,
+        "exact_match_failures": exact_match_failures,
+        "standard_check_failures": standard_check_failures,
+        "custom_check_failures": custom_check_failures,
     }
 
 
@@ -141,27 +134,30 @@ def summarize(scenarios: list[ScenarioResult]) -> dict[str, int | float]:
 # ---------------------------------------------------------------------------
 
 
-def _all_non_divergent_turn_checks_pass(turn_results: list[TurnResult]) -> bool:
-    """True if every check on a turn that did NOT diverge (or was not marked
-    may_diverge) passed, AND every tool_call on the turn passed.
+def _turn_is_clean(turn: TurnResult) -> bool:
+    """A turn is clean iff every check on it passed.
 
-    Spec: "Divergences on may_diverge turns are NOT counted as failures"
-    applies to the LLM-evaluated text checks only. Tool call failures
-    (wrong_tool, invalid_arguments, missing, unexpected_tool) always count
-    because they are structural, not semantic.
-
-    A turn whose checks failed because the agent errored / timed out DOES
-    count against the run.
+    Failure conditions:
+    - Turn-level error status (agent_error / agent_timeout / eval_error /
+      empty_response) immediately disqualifies.
+    - Any tool_call with status != 'pass'.
+    - On may_diverge=False turns: exact_match is False.
+    - On may_diverge=True turns: any standard_check_results entry not passed.
+    - Any custom check entry not passed (regardless of may_diverge).
     """
-    for t in turn_results:
-        if t.status in {"agent_error", "agent_timeout", "eval_error", "empty_response"}:
+    if turn.status in {"agent_error", "agent_timeout", "eval_error", "empty_response"}:
+        return False
+    for record in turn.tool_calls:
+        if record.status != "pass":
             return False
-        for record in t.tool_calls:
-            if record.status != "pass":
+    if turn.may_diverge:
+        for sr in turn.standard_check_results:
+            if not sr.passed:
                 return False
-        if t.may_diverge:
-            continue
-        for c in t.checks:
-            if not c.passed:
-                return False
+    else:
+        if turn.exact_match is not True:
+            return False
+    for c in turn.checks:
+        if not c.passed:
+            return False
     return True
