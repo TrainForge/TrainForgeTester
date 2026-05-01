@@ -27,7 +27,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Callable
 
-from trainforge.agent_client import AgentClient, AgentReply, Message
+from trainforge.agent_client import AgentClient, Message, Role
 from trainforge.errors import (
     AgentError,
     AgentTimeoutError,
@@ -43,17 +43,22 @@ from trainforge.evaluation import (
 from trainforge.llm.base import LLMClient
 from trainforge.schema import (
     AgentTurn,
+    ArgumentType,
     CheckResult,
     CustomerTurn,
     ExpectedTool,
     OutcomeResult,
+    OutcomeStatus,
     Scenario,
     ScenarioResult,
     ScenarioRunResult,
+    ScenarioStatus,
     ToolArgumentSchema,
     ToolCallRecord,
+    ToolCallStatus,
     ToolLoop,
     TurnResult,
+    TurnStatus,
 )
 from trainforge.scoring import aggregate_consistency, classify_scenario_run
 from trainforge.tool_validator import AgentToolCall, LoopMatcher, MatchDecision
@@ -131,8 +136,8 @@ class ScenarioRunner:
         for i, turn in enumerate(scenario.turns):
             if isinstance(turn, CustomerTurn):
                 pending_customer = turn
-                golden_history.append({"role": "customer", "content": turn.message})
-                actual_history.append({"role": "customer", "content": turn.message})
+                golden_history.append({"role": Role.USER, "content": turn.message})
+                actual_history.append({"role": Role.USER, "content": turn.message})
                 continue
 
             assert isinstance(turn, AgentTurn)
@@ -155,7 +160,7 @@ class ScenarioRunner:
             # Golden injection for the text turn: the GOLDEN text response is
             # what future turns see.
             golden_history.append(
-                {"role": "agent", "content": turn.golden_response}
+                {"role": Role.AGENT, "content": turn.golden_response}
             )
             pending_customer = None
 
@@ -222,20 +227,20 @@ class ScenarioRunner:
             reply = self.agent.chat(list(golden_history))
         except AgentTimeoutError as exc:
             log.warning("agent timeout on scenario=%s turn=%d", scenario.id, turn_index)
-            actual_history.append({"role": "agent", "content": ""})
-            return base.to_error_result("agent_timeout", str(exc))
+            actual_history.append({"role": Role.AGENT, "content": ""})
+            return base.to_error_result(TurnStatus.AGENT_TIMEOUT, str(exc))
         except AgentError as exc:
             log.warning("agent error on scenario=%s turn=%d: %s", scenario.id, turn_index, exc)
-            actual_history.append({"role": "agent", "content": ""})
-            return base.to_error_result("agent_error", str(exc))
+            actual_history.append({"role": Role.AGENT, "content": ""})
+            return base.to_error_result(TurnStatus.AGENT_ERROR, str(exc))
         except AgentUnreachableError as exc:
             log.error("agent unreachable: %s", exc)
-            actual_history.append({"role": "agent", "content": ""})
-            tr = base.to_error_result("agent_error", str(exc))
+            actual_history.append({"role": Role.AGENT, "content": ""})
+            tr = base.to_error_result(TurnStatus.AGENT_ERROR, str(exc))
             return TurnResult(**{**tr.model_dump(), "error": "agent_unreachable"})
 
         actual_text = reply.text or ""
-        actual_history.append({"role": "agent", "content": actual_text})
+        actual_history.append({"role": Role.AGENT, "content": actual_text})
 
         if not actual_text.strip():
             fail_checks = [
@@ -250,7 +255,7 @@ class ScenarioRunner:
                 may_diverge=agent_turn.may_diverge,
                 divergence_note=agent_turn.divergence_note,
                 tool_calls=tool_records,
-                status="empty_response",
+                status=TurnStatus.EMPTY_RESPONSE,
                 consistency_score=1,
                 divergence_type="missing_information",
                 checks=fail_checks,
@@ -278,7 +283,7 @@ class ScenarioRunner:
                 may_diverge=agent_turn.may_diverge,
                 divergence_note=agent_turn.divergence_note,
                 tool_calls=tool_records,
-                status="eval_error",
+                status=TurnStatus.EVAL_ERROR,
                 checks=fail_checks,
                 error=str(exc),
             )
@@ -295,7 +300,7 @@ class ScenarioRunner:
             may_diverge=agent_turn.may_diverge,
             divergence_note=agent_turn.divergence_note,
             tool_calls=tool_records,
-            status="evaluated",
+            status=TurnStatus.EVALUATED,
             consistency_score=turn_eval.consistency_score,
             divergence_type=turn_eval.divergence_type,
             checks=check_results,
@@ -329,31 +334,30 @@ class ScenarioRunner:
             try:
                 reply = self.agent.chat(list(golden_history))
             except AgentTimeoutError as exc:
-                raise _AgentAbort("agent_timeout", str(exc)) from exc
+                raise _AgentAbort(TurnStatus.AGENT_TIMEOUT, str(exc)) from exc
             except AgentError as exc:
-                raise _AgentAbort("agent_error", str(exc)) from exc
+                raise _AgentAbort(TurnStatus.AGENT_ERROR, str(exc)) from exc
             except AgentUnreachableError as exc:
-                raise _AgentAbort("agent_unreachable", str(exc)) from exc
+                raise _AgentAbort(OutcomeStatus.AGENT_UNREACHABLE, str(exc)) from exc
 
             if not reply.is_tool_round:
                 # Agent returned text while we were still expecting tool
                 # calls. Record it into actual_history for reporting, then
                 # break so remaining tools are marked ``missing`` below.
                 text = reply.text or ""
-                actual_history.append({"role": "agent", "content": text})
+                actual_history.append({"role": Role.AGENT, "content": text})
                 break
 
             rounds += 1
 
             # Record the agent's actual tool_calls in the ACTUAL history
             # (preserves what really happened for the outcome eval).
-            actual_history.append(
-                {
-                    "role": "agent",
-                    "content": reply.text or "",
-                    "tool_calls": [_call_to_dict(c) for c in reply.tool_calls],
-                }
-            )
+            actual_agent_tool_msg: Message = {
+                "role": Role.AGENT,
+                "content": reply.text or "",
+                "tool_calls": [_call_to_dict(c) for c in reply.tool_calls],
+            }
+            actual_history.append(actual_agent_tool_msg)
 
             decisions = matcher.process(reply.tool_calls)
             for decision in decisions:
@@ -373,19 +377,21 @@ class ScenarioRunner:
                 injected_calls.append(
                     _expected_call_to_dict(decision.matched_tool, call_id)
                 )
-                injected_responses.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": call_id,
-                        "name": decision.matched_tool.name,
-                        "content": decision.matched_tool.expected_response,
-                    }
-                )
+                tool_response_msg: Message = {
+                    "role": Role.TOOL,
+                    "tool_call_id": call_id,
+                    "name": decision.matched_tool.name,
+                    "content": decision.matched_tool.expected_response,
+                }
+                injected_responses.append(tool_response_msg)
 
             if injected_calls:
-                golden_history.append(
-                    {"role": "agent", "content": None, "tool_calls": injected_calls}
-                )
+                golden_agent_tool_msg: Message = {
+                    "role": Role.AGENT,
+                    "content": None,
+                    "tool_calls": injected_calls,
+                }
+                golden_history.append(golden_agent_tool_msg)
                 golden_history.extend(injected_responses)
                 actual_history.extend(injected_responses)
 
@@ -399,22 +405,21 @@ class ScenarioRunner:
                     expected_name=expected.name,
                     expected_arguments_schema=expected.arguments_schema,
                     actual_name=None,
-                    status="missing",
+                    status=ToolCallStatus.MISSING,
                     explanation="agent stopped emitting tool_calls before this tool was invoked",
                 )
             )
             # Still inject the golden call + response so the downstream text
             # turn sees a coherent history.
             call_id = _ensure_call_id(None)
-            golden_history.append(
-                {
-                    "role": "agent",
-                    "content": None,
-                    "tool_calls": [_expected_call_to_dict(expected, call_id)],
-                }
-            )
+            golden_missing_tool_msg: Message = {
+                "role": Role.AGENT,
+                "content": None,
+                "tool_calls": [_expected_call_to_dict(expected, call_id)],
+            }
+            golden_history.append(golden_missing_tool_msg)
             response_msg: Message = {
-                "role": "tool",
+                "role": Role.TOOL,
                 "tool_call_id": call_id,
                 "name": expected.name,
                 "content": expected.expected_response,
@@ -438,7 +443,7 @@ class ScenarioRunner:
         self, scenario: Scenario, actual_history: list[Message]
     ) -> OutcomeResult:
         if not scenario.outcome_checks:
-            return OutcomeResult(status="evaluated", checks=[])
+            return OutcomeResult(status=OutcomeStatus.EVALUATED, checks=[])
 
         try:
             outcome: OutcomeEval = evaluate_outcome(
@@ -450,7 +455,7 @@ class ScenarioRunner:
         except EvaluationError as exc:
             log.warning("outcome eval error on scenario=%s: %s", scenario.id, exc)
             return OutcomeResult(
-                status="eval_error",
+                status=OutcomeStatus.EVAL_ERROR,
                 checks=[
                     CheckResult(check=c, passed=False, explanation="eval_error")
                     for c in scenario.outcome_checks
@@ -459,7 +464,7 @@ class ScenarioRunner:
             )
 
         return OutcomeResult(
-            status="evaluated",
+            status=OutcomeStatus.EVALUATED,
             checks=[
                 CheckResult(check=c.check, passed=c.passed, explanation=c.explanation)
                 for c in outcome.checks
@@ -481,7 +486,7 @@ class _TurnBase:
     divergence_note: str | None
     tool_calls: list[ToolCallRecord]
 
-    def to_error_result(self, status: str, error: str) -> TurnResult:
+    def to_error_result(self, status: TurnStatus, error: str) -> TurnResult:
         return TurnResult(
             turn_index=self.turn_index,
             customer_message=self.customer_message,
@@ -490,7 +495,7 @@ class _TurnBase:
             may_diverge=self.may_diverge,
             divergence_note=self.divergence_note,
             tool_calls=self.tool_calls,
-            status=status,  # type: ignore[arg-type]
+            status=status,
             checks=[],
             diverged=True,
             error=error,
@@ -500,7 +505,7 @@ class _TurnBase:
 class _AgentAbort(Exception):
     """Raised from ``_run_tool_loop`` when the agent HTTP layer gave up."""
 
-    def __init__(self, status: str, message: str) -> None:
+    def __init__(self, status: TurnStatus | OutcomeStatus, message: str) -> None:
         super().__init__(message)
         self.status = status
         self.message = message
@@ -514,7 +519,7 @@ def _tool_abort_turn_result(
     tool_records: list[ToolCallRecord],
     abort: _AgentAbort,
 ) -> TurnResult:
-    is_unreachable = abort.status == "agent_unreachable"
+    is_unreachable = abort.status == OutcomeStatus.AGENT_UNREACHABLE
     base = _TurnBase(
         turn_index=turn_index,
         customer_message=customer_turn.message,
@@ -523,7 +528,11 @@ def _tool_abort_turn_result(
         divergence_note=agent_turn.divergence_note,
         tool_calls=tool_records,
     )
-    status = "agent_error" if is_unreachable else abort.status
+    status = (
+        TurnStatus.AGENT_ERROR
+        if is_unreachable
+        else (abort.status if isinstance(abort.status, TurnStatus) else TurnStatus.AGENT_ERROR)
+    )
     tr = base.to_error_result(status, abort.message)
     if is_unreachable:
         return TurnResult(**{**tr.model_dump(), "error": "agent_unreachable"})
@@ -535,9 +544,9 @@ def _unreachable_run(
 ) -> ScenarioRunResult:
     return ScenarioRunResult(
         run_index=run_index,
-        status="agent_unreachable",
+        status=ScenarioStatus.AGENT_UNREACHABLE,
         turns=turn_results,
-        outcome=OutcomeResult(status="agent_unreachable", error=error),
+        outcome=OutcomeResult(status=OutcomeStatus.AGENT_UNREACHABLE, error=error),
         error=error,
     )
 
@@ -575,15 +584,15 @@ def _default_arguments(schema: dict[str, ToolArgumentSchema]) -> dict:
     return defaults
 
 
-def _default_for(t: str) -> object:
+def _default_for(t: ArgumentType) -> object:
     return {
-        "string": "",
-        "integer": 0,
-        "number": 0.0,
-        "boolean": False,
-        "array": [],
-        "object": {},
-        "any": "",
+        ArgumentType.STRING: "",
+        ArgumentType.INTEGER: 0,
+        ArgumentType.NUMBER: 0.0,
+        ArgumentType.BOOLEAN: False,
+        ArgumentType.ARRAY: [],
+        ArgumentType.OBJECT: {},
+        ArgumentType.ANY: "",
     }.get(t, "")
 
 

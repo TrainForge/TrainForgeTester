@@ -16,7 +16,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
-from typing import Literal
+from enum import Enum
 
 from trainforge.errors import EvaluationError
 from trainforge.llm.base import LLMClient
@@ -27,23 +27,23 @@ from trainforge.llm.prompts import (
 )
 
 
-DivergenceType = Literal[
-    "none",
-    "factual_difference",
-    "style_difference",
-    "missing_information",
-    "extra_information",
-    "wrong_action",
-]
+try:
+    from enum import StrEnum
+except ImportError:  # pragma: no cover - Python < 3.11
+    class StrEnum(str, Enum):
+        pass
 
-_VALID_DIVERGENCE_TYPES = {
-    "none",
-    "factual_difference",
-    "style_difference",
-    "missing_information",
-    "extra_information",
-    "wrong_action",
-}
+
+class DivergenceType(StrEnum):
+    NONE = "none"
+    FACTUAL_DIFFERENCE = "factual_difference"
+    STYLE_DIFFERENCE = "style_difference"
+    MISSING_INFORMATION = "missing_information"
+    EXTRA_INFORMATION = "extra_information"
+    WRONG_ACTION = "wrong_action"
+
+
+_VALID_DIVERGENCE_TYPES = {member.value for member in DivergenceType}
 
 
 @dataclass(frozen=True)
@@ -168,11 +168,15 @@ def _parse_turn_eval(obj: dict, requested_checks: list[str]) -> TurnEval:
     if not isinstance(raw_score, int) or not 1 <= raw_score <= 5:
         raise EvaluationError(f"invalid consistency_score: {raw_score!r}")
 
-    div = obj.get("divergence_type", "none")
+    div = obj.get("divergence_type", DivergenceType.NONE.value)
     if not isinstance(div, str):
         raise EvaluationError(f"invalid divergence_type: {div!r}")
     if div not in _VALID_DIVERGENCE_TYPES:
-        div = "none" if raw_score == 5 else "factual_difference"
+        div = (
+            DivergenceType.NONE.value
+            if raw_score == 5
+            else DivergenceType.FACTUAL_DIFFERENCE.value
+        )
 
     raw_checks = obj.get("checks", [])
     if not isinstance(raw_checks, list):
@@ -181,7 +185,7 @@ def _parse_turn_eval(obj: dict, requested_checks: list[str]) -> TurnEval:
     parsed_checks = _parse_checks(raw_checks, requested_checks)
     return TurnEval(
         consistency_score=raw_score,
-        divergence_type=div,  # type: ignore[arg-type]
+        divergence_type=DivergenceType(div),
         checks=parsed_checks,
     )
 

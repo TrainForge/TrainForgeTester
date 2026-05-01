@@ -12,6 +12,8 @@ from __future__ import annotations
 import logging
 import os
 import sys
+from collections.abc import Callable
+from enum import Enum
 from pathlib import Path
 
 import click
@@ -36,7 +38,21 @@ from trainforge.schema import load_results, load_scenarios
 log = logging.getLogger("trainforge")
 
 
-_LLM_CLIENT_FACTORY = None
+try:
+    from enum import StrEnum
+except ImportError:  # pragma: no cover - Python < 3.11
+    class StrEnum(str, Enum):
+        pass
+
+
+class LLMProvider(StrEnum):
+    AUTO = "auto"
+    ANTHROPIC = "anthropic"
+    NVIDIA = "nvidia"
+    CEREBRAS = "cerebras"
+
+
+_LLM_CLIENT_FACTORY: Callable[..., LLMClient] | None = None
 """Module-level hook for tests: a zero-arg callable returning an ``LLMClient``.
 
 Production code never sets this. Tests patch it via ``cli._LLM_CLIENT_FACTORY``
@@ -92,7 +108,7 @@ def _load_dotenv_from_tree() -> None:
 @click.option("--agent-url", required=True, help="POST endpoint of the agent under test.")
 @click.option(
     "--llm-provider",
-    type=click.Choice(["auto", "anthropic", "nvidia", "cerebras"]),
+    type=click.Choice([p.value for p in LLMProvider]),
     default="auto",
     show_default=True,
     help=(
@@ -274,10 +290,10 @@ def diff_cmd(
 @click.option("--scenarios", "scenarios_path", type=click.Path(exists=True, dir_okay=False), required=True)
 @click.option("--port", type=click.IntRange(min=1, max=65535), default=8080, show_default=True)
 @click.option("--host", default="127.0.0.1", show_default=True)
-@click.option("--mode", type=click.Choice(list(MOCK_MODES)), default="golden", show_default=True)
+@click.option("--mode", type=click.Choice([m.value for m in MOCK_MODES]), default="golden", show_default=True)
 def mock_agent_cmd(scenarios_path: str, port: int, host: str, mode: str) -> None:
     """Serve a fake agent API for development / runner self-tests."""
-    server = MockAgentServer(scenarios_path, port=port, host=host, mode=mode)  # type: ignore[arg-type]
+    server = MockAgentServer(scenarios_path, port=port, host=host, mode=mode)
     click.echo(f"mock-agent ({mode}) listening on {server.url}")
     click.echo("Ctrl-C to stop.")
     try:
@@ -329,9 +345,10 @@ def _build_llm_client(
     cerebras_api_key: str | None,
     model: str,
 ) -> LLMClient:
-    if _LLM_CLIENT_FACTORY is not None:
+    factory = _LLM_CLIENT_FACTORY
+    if factory is not None:
         key = llm_api_key or cerebras_api_key or nvidia_api_key
-        return _LLM_CLIENT_FACTORY(api_key=key, model=model)
+        return factory(api_key=key, model=model)
 
     if provider == "nvidia":
         key = nvidia_api_key or os.environ.get("NVIDIA_API_KEY")

@@ -119,7 +119,7 @@ Minimal text-only scenario:
       "id": "sc-001",
       "name": "...",
       "turns": [
-        {"role": "customer", "message": "...", "intent": "..."},
+        {"role": "user", "message": "...", "intent": "..."},
         {"role": "agent", "golden_response": "...", "checks": ["..."], "may_diverge": false}
       ],
       "expected_outcome": "...",
@@ -227,11 +227,11 @@ Content-Type: application/json
 Request:
 {
   "messages": [
-    {"role": "customer", "content": "..."},
+    {"role": "user", "content": "..."},
     {"role": "agent",    "content": "..."},
     {"role": "agent",    "content": "", "tool_calls": [{"id": "call_1", "name": "check_weather", "arguments": {"when": "tonight"}}]},
     {"role": "tool",     "tool_call_id": "call_1", "name": "check_weather", "content": "Tonight: cold and rainy."},
-    {"role": "customer", "content": "..."}
+    {"role": "user", "content": "..."}
   ]
 }
 

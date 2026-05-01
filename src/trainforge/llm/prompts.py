@@ -94,7 +94,7 @@ def build_outcome_eval_prompt(
     """Return ``(system, user)`` for the per-scenario outcome evaluation call.
 
     ``conversation`` is the ACTUAL transcript, a list of
-    ``{"role": "customer"|"agent", "content": "..."}`` dicts.
+    ``{"role": "user"|"agent", "content": "..."}`` dicts.
     """
     transcript = json.dumps(conversation, indent=2)
     check_lines = "\n".join(f"- {c}" for c in outcome_checks) if outcome_checks else "(none)"

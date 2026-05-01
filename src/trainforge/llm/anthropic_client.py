@@ -8,6 +8,7 @@ changing the protocol.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from importlib import import_module
 
 from trainforge.llm.base import DEFAULT_MODEL
 
@@ -25,9 +26,9 @@ class AnthropicClient:
     max_tokens: int = 1024
 
     def __post_init__(self) -> None:
-        from anthropic import Anthropic  # type: ignore[import-not-found]
-
-        self._client = Anthropic(api_key=self.api_key)
+        anthropic_mod = import_module("anthropic")
+        anthropic_cls = getattr(anthropic_mod, "Anthropic")
+        self._client = anthropic_cls(api_key=self.api_key)
 
     def complete(self, system: str, user: str) -> str:
         message = self._client.messages.create(
