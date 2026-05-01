@@ -189,7 +189,7 @@ def test_results_roundtrip(tmp_path: Path) -> None:
 
 def test_legacy_customer_role_is_accepted_and_normalized() -> None:
     raw = {
-        "version": "1.0",
+        "version": "2.0",
         "scenarios": [
             {
                 "id": "legacy",

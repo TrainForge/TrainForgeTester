@@ -118,7 +118,7 @@ class ToolLoop(_StrictModel):
 # ---------------------------------------------------------------------------
 
 
-class CustomerRole(StrEnum):
+class UserRole(StrEnum):
     USER = "user"
 
 
@@ -131,8 +131,8 @@ class TurnRole(StrEnum):
     AGENT = "agent"
 
 
-class CustomerTurn(_StrictModel):
-    role: CustomerRole
+class UserTurn(_StrictModel):
+    role: UserRole
     message: str
     intent: str = ""
 
@@ -140,7 +140,7 @@ class CustomerTurn(_StrictModel):
     @classmethod
     def _accept_legacy_customer(cls, v: object) -> object:
         if v == "customer":
-            return CustomerRole.USER
+            return UserRole.USER
         return v
 
 
