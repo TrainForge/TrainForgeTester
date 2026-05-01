@@ -1,24 +1,30 @@
 """Core scenario runner - the heart of TrainForge.
 
-Implements testing-spec-v1.md section "Execution Flow" and enforces
-"The Golden Injection Mechanism": after each agent turn the GOLDEN response
-(not the actual one) is appended to the conversation the agent will see on
-subsequent turns. The ACTUAL transcript is kept separately and used only for
-outcome evaluation and reporting.
+v0.2 deterministic-first model:
 
-v1.1 tool-call extension: each agent turn may declare ``tool_loops`` that
-run *before* the text turn. Within each loop the runner:
+1. **Tool loops are checked deterministically.** Each declared
+   :class:`ToolLoop` runs *before* the agent's text turn. Tool name,
+   arguments, type, ordering: all Python-equality checks. No LLM in this
+   path. See :mod:`trainforge.tool_validator`.
 
-- sends the current golden history to the agent,
-- parses the agent's tool_calls against the loop's expected tools,
-- records pass / wrong_tool / invalid_arguments / unexpected_tool per call,
-- **always** injects the GOLDEN tool_call + expected_response into the
-  history, regardless of what the agent emitted (same invariant as the text
-  golden injection),
-- continues until every expected tool is matched or the agent stops
-  emitting tool_calls (remaining expected tools are recorded as ``missing``).
+2. **Text turn evaluation has two paths**, gated by ``AgentTurn.may_diverge``:
 
-Then the text-turn path runs as before.
+   - ``may_diverge=False`` (default) - the runner does
+     ``actual_response == golden_response`` and writes ``exact_match`` to
+     the result. Zero LLM calls. Use this for curated/scripted replies
+     (legal, FAQ, compliance copy).
+   - ``may_diverge=True`` - the runner composes the 20 standard
+     NLP-consistency checks (:mod:`trainforge.standard_checks`) plus any
+     per-scenario custom checks into ONE batched LLM call. Output decoded
+     positionally back into ``standard_check_results`` and ``checks``.
+
+3. **Outcome checks** still run via LLM at the end of each scenario, also
+   in the compact batched format.
+
+4. **Golden injection** is unchanged: every agent turn the agent sees the
+   golden text + golden tool_calls + expected_response in history,
+   regardless of what it actually said. Keeps each turn evaluated against
+   a clean context.
 """
 from __future__ import annotations
 
@@ -44,18 +50,20 @@ from trainforge.llm.base import LLMClient
 from trainforge.schema import (
     AgentTurn,
     CheckResult,
-    CustomerTurn,
     ExpectedTool,
     OutcomeResult,
     Scenario,
     ScenarioResult,
     ScenarioRunResult,
+    StandardCheckResult,
     ToolArgumentSchema,
     ToolCallRecord,
     ToolLoop,
     TurnResult,
+    UserTurn,
 )
 from trainforge.scoring import aggregate_consistency, classify_scenario_run
+from trainforge.standard_checks import STANDARD_CHECKS
 from trainforge.tool_validator import AgentToolCall, LoopMatcher, MatchDecision
 
 log = logging.getLogger(__name__)
@@ -86,7 +94,7 @@ class ScenarioRunner:
 
         ``on_turn_complete`` is called once per *agent* turn processed
         (success or failure), useful for driving a progress bar. It is not
-        called for customer turns (which do no work beyond appending a
+        called for user turns (which do no work beyond appending a
         message to history).
         """
         run_results: list[ScenarioRunResult] = []
@@ -120,31 +128,28 @@ class ScenarioRunner:
         on_turn_complete: Callable[[], None] | None = None,
     ) -> ScenarioRunResult:
         golden_history: list[Message] = []
-        """What the agent sees next turn. Spec: append GOLDEN agent
-        responses + GOLDEN tool_call/tool_response pairs."""
         actual_history: list[Message] = []
-        """What actually happened. Used for outcome eval + reporting."""
 
         turn_results: list[TurnResult] = []
-        pending_customer: CustomerTurn | None = None
+        pending_user: UserTurn | None = None
 
         for i, turn in enumerate(scenario.turns):
-            if isinstance(turn, CustomerTurn):
-                pending_customer = turn
-                golden_history.append({"role": "customer", "content": turn.message})
-                actual_history.append({"role": "customer", "content": turn.message})
+            if isinstance(turn, UserTurn):
+                pending_user = turn
+                golden_history.append({"role": "user", "content": turn.message})
+                actual_history.append({"role": "user", "content": turn.message})
                 continue
 
             assert isinstance(turn, AgentTurn)
-            assert pending_customer is not None, (
-                "schema validation should have ensured customer-first alternation"
+            assert pending_user is not None, (
+                "schema validation should have ensured user-first alternation"
             )
 
             turn_result = self._execute_agent_turn(
                 scenario=scenario,
                 turn_index=i,
                 agent_turn=turn,
-                customer_turn=pending_customer,
+                user_turn=pending_user,
                 golden_history=golden_history,
                 actual_history=actual_history,
             )
@@ -152,12 +157,11 @@ class ScenarioRunner:
             if on_turn_complete is not None:
                 on_turn_complete()
 
-            # Golden injection for the text turn: the GOLDEN text response is
-            # what future turns see.
+            # Golden injection: future turns see the GOLDEN text response.
             golden_history.append(
                 {"role": "agent", "content": turn.golden_response}
             )
-            pending_customer = None
+            pending_user = None
 
             if turn_result.error == "agent_unreachable":
                 return _unreachable_run(run_index, turn_results, turn_result.error)
@@ -182,11 +186,11 @@ class ScenarioRunner:
         scenario: Scenario,
         turn_index: int,
         agent_turn: AgentTurn,
-        customer_turn: CustomerTurn,
+        user_turn: UserTurn,
         golden_history: list[Message],
         actual_history: list[Message],
     ) -> TurnResult:
-        # --- Tool loops (may be empty) -----------------------------------
+        # --- Tool loops (deterministic; may be empty) --------------------
         tool_records: list[ToolCallRecord] = []
         for loop_index, loop in enumerate(agent_turn.tool_loops):
             try:
@@ -202,16 +206,16 @@ class ScenarioRunner:
             except _AgentAbort as abort:
                 return _tool_abort_turn_result(
                     turn_index=turn_index,
-                    customer_turn=customer_turn,
+                    user_turn=user_turn,
                     agent_turn=agent_turn,
                     tool_records=tool_records,
                     abort=abort,
                 )
 
-        # --- Final text turn --------------------------------------------
+        # --- Text turn ---------------------------------------------------
         base = _TurnBase(
             turn_index=turn_index,
-            customer_message=customer_turn.message,
+            user_message=user_turn.message,
             golden_response=agent_turn.golden_response,
             may_diverge=agent_turn.may_diverge,
             divergence_note=agent_turn.divergence_note,
@@ -238,72 +242,208 @@ class ScenarioRunner:
         actual_history.append({"role": "agent", "content": actual_text})
 
         if not actual_text.strip():
-            fail_checks = [
+            # Empty agent response: every check fails by definition.
+            failed_customs = [
                 CheckResult(check=c, passed=False, explanation="agent returned empty text response")
                 for c in agent_turn.checks
             ]
             return TurnResult(
                 turn_index=turn_index,
-                customer_message=customer_turn.message,
+                user_message=user_turn.message,
                 golden_response=agent_turn.golden_response,
                 actual_response="",
                 may_diverge=agent_turn.may_diverge,
                 divergence_note=agent_turn.divergence_note,
                 tool_calls=tool_records,
                 status="empty_response",
-                consistency_score=1,
-                divergence_type="missing_information",
-                checks=fail_checks,
-                diverged=True,
+                exact_match=False if not agent_turn.may_diverge else None,
+                standard_check_results=[],
+                checks=failed_customs,
             )
+
+        # ---- DETERMINISTIC PATH: exact text match ----------------------
+        if not agent_turn.may_diverge:
+            return self._evaluate_exact_match(
+                base=base,
+                agent_turn=agent_turn,
+                user_turn=user_turn,
+                actual_text=actual_text,
+            )
+
+        # ---- LLM PATH: 20 standard NLP checks + custom checks ----------
+        return self._evaluate_with_llm(
+            base=base,
+            agent_turn=agent_turn,
+            user_turn=user_turn,
+            actual_text=actual_text,
+            scenario_id=scenario.id,
+            turn_index=turn_index,
+        )
+
+    # ------------------------------------------------------------------
+    # Text-turn evaluation paths
+    # ------------------------------------------------------------------
+
+    def _evaluate_exact_match(
+        self,
+        *,
+        base: "_TurnBase",
+        agent_turn: AgentTurn,
+        user_turn: UserTurn,
+        actual_text: str,
+    ) -> TurnResult:
+        """Deterministic path: actual must equal golden verbatim.
+
+        Custom checks are still evaluated (they exist outside the
+        equivalence question - they may probe specific structural facts a
+        scenario author cares about even on a verbatim turn). If there are
+        no custom checks, the LLM is never called for this turn.
+        """
+        passed = actual_text == agent_turn.golden_response
+        custom_results = self._evaluate_custom_only(
+            agent_turn=agent_turn,
+            user_turn=user_turn,
+            actual_text=actual_text,
+        )
+        return TurnResult(
+            turn_index=base.turn_index,
+            user_message=base.user_message,
+            golden_response=base.golden_response,
+            actual_response=actual_text,
+            may_diverge=False,
+            divergence_note=base.divergence_note,
+            tool_calls=base.tool_calls,
+            status="evaluated",
+            exact_match=passed,
+            standard_check_results=[],
+            checks=custom_results,
+        )
+
+    def _evaluate_custom_only(
+        self,
+        *,
+        agent_turn: AgentTurn,
+        user_turn: UserTurn,
+        actual_text: str,
+    ) -> list[CheckResult]:
+        if not agent_turn.checks:
+            return []
+        try:
+            turn_eval = evaluate_turn(
+                self.llm,
+                golden_response=agent_turn.golden_response,
+                actual_response=actual_text,
+                user_message=user_turn.message,
+                questions=list(agent_turn.checks),
+            )
+        except EvaluationError as exc:
+            log.warning("custom-check eval error: %s", exc)
+            return [
+                CheckResult(check=c, passed=False, explanation="eval_error")
+                for c in agent_turn.checks
+            ]
+        return [
+            CheckResult(check=c.question, passed=c.passed, explanation=c.explanation)
+            for c in turn_eval.checks
+        ]
+
+    def _evaluate_with_llm(
+        self,
+        *,
+        base: "_TurnBase",
+        agent_turn: AgentTurn,
+        user_turn: UserTurn,
+        actual_text: str,
+        scenario_id: str,
+        turn_index: int,
+    ) -> TurnResult:
+        """LLM path used when ``may_diverge=True``.
+
+        Composes the 20 standard NLP-consistency questions + the per-scenario
+        custom checks into ONE batched call. Splits the result back into
+        the two buckets by index.
+        """
+        standard_questions = [c.question for c in STANDARD_CHECKS]
+        custom_questions = list(agent_turn.checks)
+        questions = standard_questions + custom_questions
 
         try:
             turn_eval: TurnEval = evaluate_turn(
                 self.llm,
                 golden_response=agent_turn.golden_response,
                 actual_response=actual_text,
-                checks=agent_turn.checks,
+                user_message=user_turn.message,
+                questions=questions,
             )
         except EvaluationError as exc:
-            log.warning("eval error on scenario=%s turn=%d: %s", scenario.id, turn_index, exc)
-            fail_checks = [
+            log.warning(
+                "turn eval error on scenario=%s turn=%d: %s",
+                scenario_id,
+                turn_index,
+                exc,
+            )
+            standard_fail = [
+                StandardCheckResult(
+                    id=c.id,
+                    question=c.question,
+                    passed=False,
+                    explanation="eval_error",
+                )
+                for c in STANDARD_CHECKS
+            ]
+            custom_fail = [
                 CheckResult(check=c, passed=False, explanation="eval_error")
                 for c in agent_turn.checks
             ]
             return TurnResult(
                 turn_index=turn_index,
-                customer_message=customer_turn.message,
+                user_message=user_turn.message,
                 golden_response=agent_turn.golden_response,
                 actual_response=actual_text,
-                may_diverge=agent_turn.may_diverge,
+                may_diverge=True,
                 divergence_note=agent_turn.divergence_note,
-                tool_calls=tool_records,
+                tool_calls=base.tool_calls,
                 status="eval_error",
-                checks=fail_checks,
+                exact_match=None,
+                standard_check_results=standard_fail,
+                checks=custom_fail,
                 error=str(exc),
             )
 
-        check_results = [
-            CheckResult(check=c.check, passed=c.passed, explanation=c.explanation)
-            for c in turn_eval.checks
+        # Split positionally: first len(STANDARD_CHECKS) are standard, rest custom.
+        n_std = len(STANDARD_CHECKS)
+        std_evals = turn_eval.checks[:n_std]
+        custom_evals = turn_eval.checks[n_std:]
+
+        standard_results = [
+            StandardCheckResult(
+                id=STANDARD_CHECKS[i].id,
+                question=STANDARD_CHECKS[i].question,
+                passed=ev.passed,
+                explanation=ev.explanation,
+            )
+            for i, ev in enumerate(std_evals)
+        ]
+        custom_results = [
+            CheckResult(check=c.question, passed=c.passed, explanation=c.explanation)
+            for c in custom_evals
         ]
         return TurnResult(
             turn_index=turn_index,
-            customer_message=customer_turn.message,
+            user_message=user_turn.message,
             golden_response=agent_turn.golden_response,
             actual_response=actual_text,
-            may_diverge=agent_turn.may_diverge,
+            may_diverge=True,
             divergence_note=agent_turn.divergence_note,
-            tool_calls=tool_records,
+            tool_calls=base.tool_calls,
             status="evaluated",
-            consistency_score=turn_eval.consistency_score,
-            divergence_type=turn_eval.divergence_type,
-            checks=check_results,
-            diverged=turn_eval.consistency_score < 5,
+            exact_match=None,
+            standard_check_results=standard_results,
+            checks=custom_results,
         )
 
     # ------------------------------------------------------------------
-    # Tool loop execution
+    # Tool loop execution (unchanged from v0.1)
     # ------------------------------------------------------------------
 
     def _run_tool_loop(
@@ -317,11 +457,6 @@ class ScenarioRunner:
         actual_history: list[Message],
         out_records: list[ToolCallRecord],
     ) -> None:
-        """Drive one tool_loop to completion, appending to ``out_records``.
-
-        Raises :class:`_AgentAbort` when the underlying agent call fails; the
-        outer handler converts that into a turn-level error result.
-        """
         matcher = LoopMatcher(loop)
         rounds = 0
 
@@ -336,17 +471,12 @@ class ScenarioRunner:
                 raise _AgentAbort("agent_unreachable", str(exc)) from exc
 
             if not reply.is_tool_round:
-                # Agent returned text while we were still expecting tool
-                # calls. Record it into actual_history for reporting, then
-                # break so remaining tools are marked ``missing`` below.
                 text = reply.text or ""
                 actual_history.append({"role": "agent", "content": text})
                 break
 
             rounds += 1
 
-            # Record the agent's actual tool_calls in the ACTUAL history
-            # (preserves what really happened for the outcome eval).
             actual_history.append(
                 {
                     "role": "agent",
@@ -361,14 +491,11 @@ class ScenarioRunner:
                     _decision_to_record(decision, loop_index=loop_index)
                 )
 
-            # GOLDEN INJECTION: write the GOLDEN tool_call + tool_response
-            # into the history for every decision that consumed an expected
-            # position, regardless of whether the agent got it right.
             injected_calls: list[dict] = []
             injected_responses: list[Message] = []
             for decision in decisions:
                 if decision.matched_tool is None:
-                    continue  # unexpected_tool: nothing to inject
+                    continue
                 call_id = _ensure_call_id(decision.agent_call.id)
                 injected_calls.append(
                     _expected_call_to_dict(decision.matched_tool, call_id)
@@ -389,7 +516,6 @@ class ScenarioRunner:
                 golden_history.extend(injected_responses)
                 actual_history.extend(injected_responses)
 
-        # Any pending positions left unmatched -> "missing".
         for position in matcher.finalize():
             expected = loop.tools[position]
             out_records.append(
@@ -403,8 +529,6 @@ class ScenarioRunner:
                     explanation="agent stopped emitting tool_calls before this tool was invoked",
                 )
             )
-            # Still inject the golden call + response so the downstream text
-            # turn sees a coherent history.
             call_id = _ensure_call_id(None)
             golden_history.append(
                 {
@@ -445,7 +569,7 @@ class ScenarioRunner:
                 self.llm,
                 conversation=[dict(m) for m in actual_history],
                 expected_outcome=scenario.expected_outcome,
-                outcome_checks=scenario.outcome_checks,
+                outcome_checks=list(scenario.outcome_checks),
             )
         except EvaluationError as exc:
             log.warning("outcome eval error on scenario=%s: %s", scenario.id, exc)
@@ -461,7 +585,7 @@ class ScenarioRunner:
         return OutcomeResult(
             status="evaluated",
             checks=[
-                CheckResult(check=c.check, passed=c.passed, explanation=c.explanation)
+                CheckResult(check=c.question, passed=c.passed, explanation=c.explanation)
                 for c in outcome.checks
             ],
         )
@@ -475,7 +599,7 @@ class ScenarioRunner:
 @dataclass(frozen=True)
 class _TurnBase:
     turn_index: int
-    customer_message: str
+    user_message: str
     golden_response: str
     may_diverge: bool
     divergence_note: str | None
@@ -484,15 +608,16 @@ class _TurnBase:
     def to_error_result(self, status: str, error: str) -> TurnResult:
         return TurnResult(
             turn_index=self.turn_index,
-            customer_message=self.customer_message,
+            user_message=self.user_message,
             golden_response=self.golden_response,
             actual_response="",
             may_diverge=self.may_diverge,
             divergence_note=self.divergence_note,
             tool_calls=self.tool_calls,
             status=status,  # type: ignore[arg-type]
+            exact_match=False if not self.may_diverge else None,
+            standard_check_results=[],
             checks=[],
-            diverged=True,
             error=error,
         )
 
@@ -509,7 +634,7 @@ class _AgentAbort(Exception):
 def _tool_abort_turn_result(
     *,
     turn_index: int,
-    customer_turn: CustomerTurn,
+    user_turn: UserTurn,
     agent_turn: AgentTurn,
     tool_records: list[ToolCallRecord],
     abort: _AgentAbort,
@@ -517,7 +642,7 @@ def _tool_abort_turn_result(
     is_unreachable = abort.status == "agent_unreachable"
     base = _TurnBase(
         turn_index=turn_index,
-        customer_message=customer_turn.message,
+        user_message=user_turn.message,
         golden_response=agent_turn.golden_response,
         may_diverge=agent_turn.may_diverge,
         divergence_note=agent_turn.divergence_note,
@@ -555,11 +680,6 @@ def _call_to_dict(call: AgentToolCall) -> dict:
 
 
 def _expected_call_to_dict(expected: ExpectedTool, call_id: str) -> dict:
-    """Build a tool_call dict for golden injection using the expected tool.
-
-    Arguments default to a minimal example that satisfies each schema key so
-    the injected call looks well-formed to the agent on subsequent rounds.
-    """
     return {
         "id": call_id,
         "name": expected.name,
@@ -568,10 +688,12 @@ def _expected_call_to_dict(expected: ExpectedTool, call_id: str) -> dict:
 
 
 def _default_arguments(schema: dict[str, ToolArgumentSchema]) -> dict:
-    """Fabricate a minimal valid arguments dict for golden injection."""
     defaults: dict[str, object] = {}
     for key, arg in schema.items():
-        defaults[key] = _default_for(arg.type)
+        if arg.expected is not None:
+            defaults[key] = arg.expected
+        else:
+            defaults[key] = _default_for(arg.type)
     return defaults
 
 

@@ -66,16 +66,15 @@ def _status_label(status: str) -> str:
 def render_report_html(results: RunResults) -> str:
     """Render the primary run report to an HTML string."""
     template = _env().get_template("report.html.j2")
-    divergences = _collect_divergences(results)
     failures = _collect_failures(results)
+    standard_failures = _collect_standard_failures(results)
     return template.render(
         results=results,
         summary=results.summary,
         config=results.config,
         scenarios=results.scenarios,
-        expected_divergences=divergences["expected"],
-        unexpected_divergences=divergences["unexpected"],
         failures=failures,
+        standard_failures=standard_failures,
     )
 
 
@@ -90,26 +89,30 @@ def render_diff_html(diff: "DiffReport") -> str:
 # ---------------------------------------------------------------------------
 
 
-def _collect_divergences(results: RunResults) -> dict[str, list[dict]]:
-    expected: list[dict] = []
-    unexpected: list[dict] = []
+def _collect_standard_failures(results: RunResults) -> list[dict]:
+    """Flat list of every standard-check failure across the whole run.
+
+    Useful for "which NLP-consistency axes most often broke?" view.
+    """
+    out: list[dict] = []
     for sc in results.scenarios:
         for run in sc.runs:
             for turn in run.turns:
-                if not turn.diverged:
-                    continue
-                entry = {
-                    "scenario_id": sc.scenario_id,
-                    "scenario_name": sc.name,
-                    "run_index": run.run_index,
-                    "turn_index": turn.turn_index,
-                    "divergence_type": turn.divergence_type or "unknown",
-                    "golden": turn.golden_response,
-                    "actual": turn.actual_response,
-                    "note": turn.divergence_note or "",
-                }
-                (expected if turn.may_diverge else unexpected).append(entry)
-    return {"expected": expected, "unexpected": unexpected}
+                for sr in turn.standard_check_results:
+                    if sr.passed:
+                        continue
+                    out.append(
+                        {
+                            "scenario_id": sc.scenario_id,
+                            "scenario_name": sc.name,
+                            "run_index": run.run_index,
+                            "turn_index": turn.turn_index,
+                            "id": sr.id,
+                            "question": sr.question,
+                            "explanation": sr.explanation,
+                        }
+                    )
+    return out
 
 
 def _collect_failures(results: RunResults) -> list[dict]:
@@ -136,8 +139,12 @@ def _first_failing_turn(run: ScenarioRunResult) -> TurnResult | None:
     for t in run.turns:
         if t.status != "evaluated":
             return t
-        if t.may_diverge:
-            continue
+        if any(tc.status != "pass" for tc in t.tool_calls):
+            return t
+        if t.exact_match is False:
+            return t
+        if any(not sr.passed for sr in t.standard_check_results):
+            return t
         if any(not c.passed for c in t.checks):
             return t
     return None

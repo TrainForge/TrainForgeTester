@@ -11,11 +11,11 @@ for tool_calls using OpenAI-style function-calling shape):
 
 Message variants (order preserved in ``messages``):
 
-- customer:     {"role": "customer", "content": str}
-- agent text:   {"role": "agent",    "content": str}
-- agent tool:   {"role": "agent",    "content": str | None,
+- user:         {"role": "user",  "content": str}
+- agent text:   {"role": "agent", "content": str}
+- agent tool:   {"role": "agent", "content": str | None,
                   "tool_calls": [{"id": str, "name": str, "arguments": dict}, ...]}
-- tool result:  {"role": "tool", "tool_call_id": str, "name": str, "content": str}
+- tool result:  {"role": "tool",  "tool_call_id": str, "name": str, "content": str}
 
 ToolCall shape (in both requests and responses):
     {"id": str, "name": str, "arguments": dict}
@@ -36,7 +36,7 @@ import requests
 from trainforge.errors import AgentError, AgentTimeoutError, AgentUnreachableError
 from trainforge.tool_validator import AgentToolCall
 
-Role = Literal["customer", "agent", "tool"]
+Role = Literal["user", "agent", "tool"]
 
 
 class Message(TypedDict, total=False):

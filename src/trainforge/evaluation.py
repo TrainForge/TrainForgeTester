@@ -1,22 +1,25 @@
-"""Per-turn and per-scenario evaluation wrappers.
+"""LLM evaluation: turn checks (binary, batched) + outcome checks.
 
-Wraps an :class:`LLMClient` with:
-- prompt construction (via :mod:`trainforge.llm.prompts`),
-- JSON parsing,
-- one strict-retry on parse failure (testing-spec-v1.md "Error Handling" row
-  "LLM returns unparseable JSON"),
-- coercion into typed dataclasses the runner consumes.
+The runner only invokes evaluators when it cannot answer deterministically:
 
-Outputs are intentionally typed dataclasses, not pydantic models, to keep
-this layer dependency-free of the wire-format types in
-:mod:`trainforge.schema`; the runner is the single place where the two meet.
+- Per-turn evaluation runs only when ``AgentTurn.may_diverge=True``.
+  Otherwise the runner does Python ``==`` text equality and skips this
+  module entirely. That is the v0.2 deterministic-first contract.
+- Outcome evaluation runs once per scenario over the full ACTUAL transcript.
+
+Both evaluators speak the compact ``{"r": [...], "f": {...}}`` wire format
+defined in :mod:`trainforge.llm.prompts`. This module owns:
+
+- the prompt orchestration,
+- one strict-retry on parse failure (matching the spec's error-handling
+  table),
+- positional decoding back into typed dataclasses the runner consumes.
 """
 from __future__ import annotations
 
 import json
 import re
 from dataclasses import dataclass, field
-from typing import Literal
 
 from trainforge.errors import EvaluationError
 from trainforge.llm.base import LLMClient
@@ -27,36 +30,24 @@ from trainforge.llm.prompts import (
 )
 
 
-DivergenceType = Literal[
-    "none",
-    "factual_difference",
-    "style_difference",
-    "missing_information",
-    "extra_information",
-    "wrong_action",
-]
-
-_VALID_DIVERGENCE_TYPES = {
-    "none",
-    "factual_difference",
-    "style_difference",
-    "missing_information",
-    "extra_information",
-    "wrong_action",
-}
-
-
 @dataclass(frozen=True)
 class CheckEval:
-    check: str
+    """One binary verdict from the LLM."""
+
+    question: str
     passed: bool
     explanation: str = ""
 
 
 @dataclass(frozen=True)
 class TurnEval:
-    consistency_score: int  # 1-5
-    divergence_type: DivergenceType
+    """All binary verdicts for a single turn-eval call.
+
+    The runner is responsible for splitting ``checks`` back into
+    standard-check results and per-scenario custom-check results based on
+    the order the runner originally composed the question list.
+    """
+
     checks: list[CheckEval] = field(default_factory=list)
 
 
@@ -75,22 +66,24 @@ def evaluate_turn(
     *,
     golden_response: str,
     actual_response: str,
-    checks: list[str],
+    user_message: str,
+    questions: list[str],
 ) -> TurnEval:
     """Batched per-turn evaluation. Raises :class:`EvaluationError` on failure."""
     system, user = build_turn_eval_prompt(
         golden_response=golden_response,
         actual_response=actual_response,
-        checks=checks,
+        user_message=user_message,
+        questions=questions,
     )
     raw = _call_with_strict_retry(llm, system, user)
-    return _parse_turn_eval(raw, checks)
+    return TurnEval(checks=_decode_compact(raw, questions))
 
 
 def evaluate_outcome(
     llm: LLMClient,
     *,
-    conversation: list[dict[str, str]],
+    conversation: list[dict],
     expected_outcome: str,
     outcome_checks: list[str],
 ) -> OutcomeEval:
@@ -101,7 +94,7 @@ def evaluate_outcome(
         outcome_checks=outcome_checks,
     )
     raw = _call_with_strict_retry(llm, system, user)
-    return _parse_outcome_eval(raw, outcome_checks)
+    return OutcomeEval(checks=_decode_compact(raw, outcome_checks))
 
 
 # ---------------------------------------------------------------------------
@@ -112,8 +105,8 @@ def evaluate_outcome(
 def _call_with_strict_retry(llm: LLMClient, system: str, user: str) -> dict:
     """Call ``llm.complete`` and parse a JSON object out of the response.
 
-    If the first response fails to parse, retry once with a stricter system
-    prompt suffix. If both fail, raise :class:`EvaluationError`.
+    On first parse failure, retry once with a stricter system-prompt suffix.
+    On second failure, raise :class:`EvaluationError`.
     """
     try:
         return _extract_json(llm.complete(system, user))
@@ -163,50 +156,61 @@ def _extract_json(raw: str) -> dict:
     raise _ParseFail(f"no JSON object found in: {raw[:200]!r}")
 
 
-def _parse_turn_eval(obj: dict, requested_checks: list[str]) -> TurnEval:
-    raw_score = obj.get("consistency_score")
-    if not isinstance(raw_score, int) or not 1 <= raw_score <= 5:
-        raise EvaluationError(f"invalid consistency_score: {raw_score!r}")
+def _decode_compact(obj: dict, questions: list[str]) -> list[CheckEval]:
+    """Decode a ``{"r": [...], "f": {...}}`` payload into typed CheckEvals.
 
-    div = obj.get("divergence_type", "none")
-    if not isinstance(div, str):
-        raise EvaluationError(f"invalid divergence_type: {div!r}")
-    if div not in _VALID_DIVERGENCE_TYPES:
-        div = "none" if raw_score == 5 else "factual_difference"
-
-    raw_checks = obj.get("checks", [])
-    if not isinstance(raw_checks, list):
-        raise EvaluationError(f"'checks' is not a list: {raw_checks!r}")
-
-    parsed_checks = _parse_checks(raw_checks, requested_checks)
-    return TurnEval(
-        consistency_score=raw_score,
-        divergence_type=div,  # type: ignore[arg-type]
-        checks=parsed_checks,
-    )
-
-
-def _parse_outcome_eval(obj: dict, requested_checks: list[str]) -> OutcomeEval:
-    raw_checks = obj.get("checks", [])
-    if not isinstance(raw_checks, list):
-        raise EvaluationError(f"'checks' is not a list: {raw_checks!r}")
-    return OutcomeEval(checks=_parse_checks(raw_checks, requested_checks))
-
-
-def _parse_checks(raw_checks: list, requested: list[str]) -> list[CheckEval]:
-    """Align LLM-returned checks with the requested check strings by position.
-
-    LLMs occasionally reword the check text. We trust ``requested`` as the
-    canonical label (spec: checks are natural-language strings from the
-    scenario), and map results by index when possible.
+    Strict on length: ``r`` must contain exactly ``len(questions)`` entries.
+    Permissive on the failure-explanations object: missing keys for failed
+    indices get a placeholder explanation; extra keys are ignored.
     """
-    by_index: list[CheckEval] = []
-    for i, want in enumerate(requested):
-        entry = raw_checks[i] if i < len(raw_checks) else None
-        if not isinstance(entry, dict):
-            by_index.append(CheckEval(check=want, passed=False, explanation="missing from LLM output"))
-            continue
-        passed = bool(entry.get("pass", entry.get("passed", False)))
-        explanation = str(entry.get("explanation", "") or "")
-        by_index.append(CheckEval(check=want, passed=passed, explanation=explanation))
-    return by_index
+    raw_r = obj.get("r")
+    if not isinstance(raw_r, list):
+        raise EvaluationError(
+            f"compact payload missing 'r' list: keys={sorted(obj.keys())!r}"
+        )
+    if len(raw_r) != len(questions):
+        raise EvaluationError(
+            f"compact payload 'r' has length {len(raw_r)}, expected {len(questions)}"
+        )
+
+    raw_f = obj.get("f", {}) or {}
+    if not isinstance(raw_f, dict):
+        raise EvaluationError(
+            f"compact payload 'f' must be an object, got {type(raw_f).__name__}"
+        )
+
+    out: list[CheckEval] = []
+    for i, value in enumerate(raw_r):
+        passed = _coerce_binary(value)
+        if passed is None:
+            raise EvaluationError(
+                f"compact payload r[{i}] is not 0/1/true/false: {value!r}"
+            )
+        explanation = ""
+        if not passed:
+            # Look up the explanation by 1-based index (string key).
+            raw_expl = raw_f.get(str(i + 1)) or raw_f.get(i + 1)
+            if isinstance(raw_expl, str):
+                explanation = raw_expl
+        out.append(
+            CheckEval(question=questions[i], passed=passed, explanation=explanation)
+        )
+    return out
+
+
+def _coerce_binary(v: object) -> bool | None:
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, int):
+        if v == 1:
+            return True
+        if v == 0:
+            return False
+        return None
+    if isinstance(v, str):
+        s = v.strip().lower()
+        if s in {"1", "true", "yes", "pass", "y"}:
+            return True
+        if s in {"0", "false", "no", "fail", "n"}:
+            return False
+    return None

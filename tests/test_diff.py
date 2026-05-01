@@ -45,8 +45,6 @@ def _results(*scenarios: ScenarioResult) -> RunResults:
         inconsistent=sum(1 for s in scenarios if s.inconsistent),
         pass_rate=0.0,
         overall_consistency=0.0,
-        unexpected_divergences=0,
-        expected_divergences=0,
     )
     return RunResults(
         config=RunConfig(

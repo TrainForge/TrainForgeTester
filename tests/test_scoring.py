@@ -1,4 +1,4 @@
-"""PASS / PARTIAL PASS / FAIL rules from spec Evaluation & Scoring."""
+"""PASS / PARTIAL PASS / FAIL rules under the v0.2 deterministic-first model."""
 from __future__ import annotations
 
 import pytest
@@ -8,6 +8,7 @@ from trainforge.schema import (
     OutcomeResult,
     ScenarioResult,
     ScenarioRunResult,
+    StandardCheckResult,
     TurnResult,
 )
 from trainforge.scoring import (
@@ -22,22 +23,29 @@ def _turn(
     *,
     index: int = 0,
     may_diverge: bool = False,
-    diverged: bool = False,
-    checks: list[tuple[str, bool]] | None = None,
+    exact_match: bool | None = True,
+    standard: list[tuple[str, bool]] | None = None,
+    custom: list[tuple[str, bool]] | None = None,
     status: str = "evaluated",
-    consistency: int | None = 5,
 ) -> TurnResult:
+    """Build a TurnResult for scoring tests.
+
+    For may_diverge=False: pass exact_match=True/False (default True).
+    For may_diverge=True: pass exact_match=None and supply standard checks.
+    """
     return TurnResult(
         turn_index=index,
-        customer_message="x",
+        user_message="x",
         golden_response="g",
-        actual_response="a",
+        actual_response="a" if exact_match is False else "g",
         may_diverge=may_diverge,
         status=status,  # type: ignore[arg-type]
-        consistency_score=consistency,
-        divergence_type="none" if not diverged else "factual_difference",
-        checks=[CheckResult(check=c[0], passed=c[1]) for c in (checks or [])],
-        diverged=diverged,
+        exact_match=None if may_diverge else exact_match,
+        standard_check_results=[
+            StandardCheckResult(id=s[0], question=s[0], passed=s[1])
+            for s in (standard or [])
+        ],
+        checks=[CheckResult(check=c[0], passed=c[1]) for c in (custom or [])],
     )
 
 
@@ -50,46 +58,63 @@ def _outcome(*, passed: list[bool], status: str = "evaluated", error: str | None
 
 
 # ---------------------------------------------------------------------------
-# classify_scenario_run - the heart of scoring
+# classify_scenario_run
 # ---------------------------------------------------------------------------
 
 
-def test_pass_when_all_turn_checks_and_outcomes_pass() -> None:
-    turns = [_turn(checks=[("c", True)]), _turn(index=2, checks=[("c2", True)])]
+def test_pass_when_exact_match_and_outcomes_pass() -> None:
+    """Default may_diverge=False path: text matched verbatim, outcome OK."""
+    turns = [_turn(custom=[("c", True)]), _turn(index=2, custom=[("c2", True)])]
     outcome = _outcome(passed=[True, True])
     assert classify_scenario_run(turns, outcome) == "pass"
 
 
-def test_may_diverge_turn_failures_do_not_cause_failure() -> None:
-    """Spec: Divergences on may_diverge turns are NOT counted as failures."""
+def test_pass_when_may_diverge_and_all_standard_checks_pass() -> None:
     turns = [
-        _turn(checks=[("c1", True)]),
         _turn(
-            index=2,
             may_diverge=True,
-            diverged=True,
-            consistency=2,
-            checks=[("c2", False)],
-        ),
+            standard=[("same_language", True), ("same_intent", True)],
+            custom=[("c", True)],
+        )
     ]
     outcome = _outcome(passed=[True])
     assert classify_scenario_run(turns, outcome) == "pass"
 
 
-def test_partial_when_non_divergent_turn_check_fails_but_outcome_ok() -> None:
-    turns = [_turn(checks=[("c", False)])]
+def test_partial_when_exact_match_fails_but_outcome_passes() -> None:
+    """v0.2 specific: an exact-match miss on a may_diverge=False turn is a
+    structural failure that prevents PASS. Outcome OK -> PARTIAL."""
+    turns = [_turn(exact_match=False, custom=[("c", True)])]
+    outcome = _outcome(passed=[True])
+    assert classify_scenario_run(turns, outcome) == "partial_pass"
+
+
+def test_partial_when_standard_check_fails_but_outcome_passes() -> None:
+    """may_diverge=True turn where one of the 20 standard NLP checks fails."""
+    turns = [
+        _turn(
+            may_diverge=True,
+            standard=[("same_language", False), ("same_intent", True)],
+        )
+    ]
+    outcome = _outcome(passed=[True])
+    assert classify_scenario_run(turns, outcome) == "partial_pass"
+
+
+def test_partial_when_custom_check_fails_but_outcome_passes() -> None:
+    turns = [_turn(custom=[("c", False)])]
     outcome = _outcome(passed=[True])
     assert classify_scenario_run(turns, outcome) == "partial_pass"
 
 
 def test_fail_when_any_outcome_check_fails() -> None:
-    turns = [_turn(checks=[("c", True)])]
+    turns = [_turn(custom=[("c", True)])]
     outcome = _outcome(passed=[True, False])
     assert classify_scenario_run(turns, outcome) == "fail"
 
 
 def test_fail_when_outcome_eval_errored() -> None:
-    turns = [_turn(checks=[("c", True)])]
+    turns = [_turn(custom=[("c", True)])]
     outcome = _outcome(passed=[], status="eval_error", error="boom")
     assert classify_scenario_run(turns, outcome) == "fail"
 
@@ -100,9 +125,11 @@ def test_agent_unreachable_propagates() -> None:
     assert classify_scenario_run(turns, outcome) == "agent_unreachable"
 
 
-@pytest.mark.parametrize("status", ["agent_error", "agent_timeout", "eval_error", "empty_response"])
+@pytest.mark.parametrize(
+    "status", ["agent_error", "agent_timeout", "eval_error", "empty_response"]
+)
 def test_any_turn_level_error_prevents_full_pass(status: str) -> None:
-    turns = [_turn(status=status, checks=[])]
+    turns = [_turn(status=status, custom=[])]
     outcome = _outcome(passed=[True])
     assert classify_scenario_run(turns, outcome) == "partial_pass"
 
@@ -150,15 +177,19 @@ def test_consistent_at_threshold() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_summarize_counts_divergences_by_category() -> None:
+def test_summarize_counts_failures_by_category() -> None:
     turns = [
-        _turn(diverged=True, may_diverge=False),
-        _turn(diverged=True, may_diverge=True),
-        _turn(diverged=False),
+        _turn(exact_match=False),  # 1 exact_match failure
+        _turn(
+            index=2,
+            may_diverge=True,
+            standard=[("same_language", False), ("same_intent", True)],
+            custom=[("c", False)],
+        ),  # 1 standard failure + 1 custom failure
     ]
     run = ScenarioRunResult(
         run_index=0,
-        status="pass",
+        status="partial_pass",
         turns=turns,
         outcome=OutcomeResult(status="evaluated", checks=[]),
     )
@@ -170,8 +201,8 @@ def test_summarize_counts_divergences_by_category() -> None:
         inconsistent=False,
     )
     summary = summarize([sc])
-    assert summary["unexpected_divergences"] == 1
-    assert summary["expected_divergences"] == 1
-    assert summary["passed"] == 1
-    assert summary["failed"] == 0
+    assert summary["exact_match_failures"] == 1
+    assert summary["standard_check_failures"] == 1
+    assert summary["custom_check_failures"] == 1
     assert summary["total_scenarios"] == 1
+    assert summary["partial"] == 1

@@ -1,7 +1,7 @@
 """Development mock agent server.
 
 Used to self-test the runner without a real agent under test, and as a sanity
-check for customers setting up TrainForge for the first time. Exposes a
+check for users setting up TrainForge for the first time. Exposes a
 single ``POST /chat`` endpoint that speaks the spec's extended agent API
 contract (``{"messages": [...]}`` in, ``{"response"?: str, "tool_calls"?: [...]}``
 out; see :mod:`trainforge.agent_client`).
@@ -14,9 +14,9 @@ Modes (testing-spec-v1.md Phase 1e):
 - ``error``   : randomly return HTTP 500 or hang.
 
 State inference: the server looks at the message history to figure out
-(a) which scenario + agent-turn we're in (by matching the last customer
+(a) which scenario + agent-turn we're in (by matching the last user
 message) and (b) how many tool_call rounds the agent has already completed
-(by counting non-customer messages since that customer index that contain
+(by counting non-user messages since that user index that contain
 tool_calls). Everything is stateless at the connection level.
 """
 from __future__ import annotations
@@ -32,7 +32,7 @@ from typing import Literal
 
 from trainforge.schema import (
     AgentTurn,
-    CustomerTurn,
+    UserTurn,
     ExpectedTool,
     Scenario,
     ToolArgumentSchema,
@@ -112,21 +112,21 @@ class MockAgentServer:
 
 
 def _build_scenario_index(scenarios: list[Scenario]) -> dict[str, AgentTurn]:
-    """Map the customer-message string to the agent turn that follows it.
+    """Map the user-message string to the agent turn that follows it.
 
     Ambiguity: first occurrence wins. Distinct scenarios in a single file
-    must use distinct customer wording, which is already true for MVP.
+    must use distinct user wording, which is already true for MVP.
     """
     index: dict[str, AgentTurn] = {}
     for scenario in scenarios:
-        pending_customer: CustomerTurn | None = None
+        pending_user: UserTurn | None = None
         for turn in scenario.turns:
-            if isinstance(turn, CustomerTurn):
-                pending_customer = turn
+            if isinstance(turn, UserTurn):
+                pending_user = turn
                 continue
-            if isinstance(turn, AgentTurn) and pending_customer is not None:
-                index.setdefault(pending_customer.message, turn)
-                pending_customer = None
+            if isinstance(turn, AgentTurn) and pending_user is not None:
+                index.setdefault(pending_user.message, turn)
+                pending_user = None
     return index
 
 
@@ -165,16 +165,16 @@ def _pending_tool_position(
     """Return (loop_index, position) of the next tool to emit, or None.
 
     Counts the number of agent messages with ``tool_calls`` since the last
-    customer message in ``history``, then walks the turn's tool_loops in
+    user message in ``history``, then walks the turn's tool_loops in
     order to locate the next slot.
     """
-    last_customer = -1
+    last_user = -1
     for i, msg in enumerate(history):
-        if msg.get("role") == "customer":
-            last_customer = i
+        if msg.get("role") == "user":
+            last_user = i
 
     tool_rounds = 0
-    for msg in history[last_customer + 1 :]:
+    for msg in history[last_user + 1 :]:
         if msg.get("role") == "agent" and msg.get("tool_calls"):
             tool_rounds += len(msg["tool_calls"])
 
@@ -311,19 +311,19 @@ def _make_handler(
                 self._send_json(400, {"error": "'messages' must be a non-empty list"})
                 return
 
-            last_customer_msg = _last_customer_content(messages)
-            if last_customer_msg is None:
+            last_user_msg = _last_user_content(messages)
+            if last_user_msg is None:
                 self._send_json(
                     400,
-                    {"error": "history must contain at least one customer message"},
+                    {"error": "history must contain at least one user message"},
                 )
                 return
 
-            agent_turn = scenario_index.get(last_customer_msg)
+            agent_turn = scenario_index.get(last_user_msg)
             if agent_turn is None:
                 self._send_json(
                     404,
-                    {"error": f"no scenario indexed for message: {last_customer_msg!r}"},
+                    {"error": f"no scenario indexed for message: {last_user_msg!r}"},
                 )
                 return
 
@@ -354,9 +354,9 @@ def _make_handler(
     return _Handler
 
 
-def _last_customer_content(messages: list[dict]) -> str | None:
+def _last_user_content(messages: list[dict]) -> str | None:
     for msg in reversed(messages):
-        if isinstance(msg, dict) and msg.get("role") == "customer":
+        if isinstance(msg, dict) and msg.get("role") == "user":
             content = msg.get("content")
             if isinstance(content, str):
                 return content

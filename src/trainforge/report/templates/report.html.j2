@@ -23,16 +23,22 @@
   <div class="card"><div class="label">Overall consistency</div><div class="value">{{ summary.overall_consistency | pct }}</div></div>
   <div class="card"><div class="label">Inconsistent</div><div class="value">{{ summary.inconsistent }}</div></div>
   {% endif %}
-  <div class="card"><div class="label">Unexpected divergences</div><div class="value">{{ summary.unexpected_divergences }}</div></div>
-  <div class="card"><div class="label">Expected divergences</div><div class="value">{{ summary.expected_divergences }}</div></div>
   {% if summary.tool_call_failures %}
   <div class="card"><div class="label">Tool call failures</div><div class="value">{{ summary.tool_call_failures }}</div></div>
+  {% endif %}
+  {% if summary.exact_match_failures %}
+  <div class="card"><div class="label">Exact-match failures</div><div class="value">{{ summary.exact_match_failures }}</div></div>
+  {% endif %}
+  {% if summary.standard_check_failures %}
+  <div class="card"><div class="label">Standard NLP failures</div><div class="value">{{ summary.standard_check_failures }}</div></div>
+  {% endif %}
+  {% if summary.custom_check_failures %}
+  <div class="card"><div class="label">Custom check failures</div><div class="value">{{ summary.custom_check_failures }}</div></div>
   {% endif %}
 </div>
 
 <h2>Scenarios</h2>
 {% for sc in scenarios %}
-  {% set first_run = sc.runs[0] if sc.runs else None %}
   {% set overall_status = 'pass' if sc.runs and (sc.runs | selectattr('status', 'equalto', 'pass') | list) else ('partial_pass' if sc.runs and (sc.runs | selectattr('status', 'equalto', 'partial_pass') | list) else ('agent_unreachable' if sc.runs and sc.runs[0].status == 'agent_unreachable' else 'fail')) %}
 <div class="scenario">
   <div class="scenario-head">
@@ -69,11 +75,14 @@
     {% endif %}
     {% for turn in run.turns %}
       <div class="turn customer">
-        <div class="role">Customer</div>
-        <div class="text">{{ turn.customer_message }}</div>
+        <div class="role">User</div>
+        <div class="text">{{ turn.user_message }}</div>
       </div>
-      {% set has_tool_failure = turn.tool_calls | rejectattr('status', 'equalto', 'pass') | list %}
-      {% set failing = turn.status != 'evaluated' or has_tool_failure or (not turn.may_diverge and (turn.checks | rejectattr('passed') | list)) %}
+      {% set tool_failed = turn.tool_calls | rejectattr('status', 'equalto', 'pass') | list %}
+      {% set std_failed = turn.standard_check_results | rejectattr('passed') | list %}
+      {% set custom_failed = turn.checks | rejectattr('passed') | list %}
+      {% set exact_failed = turn.exact_match is sameas false %}
+      {% set failing = turn.status != 'evaluated' or tool_failed or std_failed or custom_failed or exact_failed %}
       {% if turn.tool_calls %}
         {% set loop_groups = {} %}
         {% for tc in turn.tool_calls %}
@@ -106,22 +115,43 @@
           </div>
         {% endfor %}
       {% endif %}
-      <div class="turn agent {% if turn.diverged %}diverged{% endif %} {% if failing %}failing{% endif %}">
-        <div class="role">Agent (turn {{ turn.turn_index }}){% if turn.may_diverge %} &middot; may_diverge{% endif %}</div>
+      <div class="turn agent {% if failing %}failing{% endif %}">
+        <div class="role">
+          Agent (turn {{ turn.turn_index }})
+          {% if turn.may_diverge %}
+            &middot; <span class="badge accent">may_diverge: NLP checks</span>
+          {% else %}
+            &middot; <span class="badge {{ 'pass' if turn.exact_match else 'fail' if turn.exact_match is sameas false else 'neutral' }}">
+              exact match: {% if turn.exact_match %}OK{% elif turn.exact_match is sameas false %}MISMATCH{% else %}n/a{% endif %}
+            </span>
+          {% endif %}
+        </div>
         <div class="kv">
           <span class="k">Golden</span><span class="text">{{ turn.golden_response }}</span>
           <span class="k">Actual</span><span class="text">{{ turn.actual_response or '(empty)' }}</span>
           {% if turn.status != 'evaluated' %}
           <span class="k">Status</span><span><span class="badge fail">{{ turn.status | status_label }}</span></span>
           {% endif %}
-          {% if turn.consistency_score is not none %}
-          <span class="k">Consistency</span><span>{{ turn.consistency_score }} / 5{% if turn.divergence_type and turn.divergence_type != 'none' %} &middot; <span class="small">{{ turn.divergence_type }}</span>{% endif %}</span>
-          {% endif %}
           {% if turn.divergence_note %}
           <span class="k">Note</span><span class="small">{{ turn.divergence_note }}</span>
           {% endif %}
         </div>
+
+        {% if turn.standard_check_results %}
+        <h4 style="margin: 10px 0 4px; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em;">
+          Standard NLP checks ({{ (turn.standard_check_results | selectattr('passed') | list | length) }}/{{ turn.standard_check_results | length }} passed)
+        </h4>
+        <ul class="checks">
+          {% for sr in turn.standard_check_results %}
+          <li class="{{ 'pass' if sr.passed else 'fail' }}"><code class="small">{{ sr.id }}</code> &mdash; {{ sr.question }}{% if sr.explanation %} &mdash; <span class="small">{{ sr.explanation }}</span>{% endif %}</li>
+          {% endfor %}
+        </ul>
+        {% endif %}
+
         {% if turn.checks %}
+        <h4 style="margin: 10px 0 4px; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em;">
+          Custom checks ({{ (turn.checks | selectattr('passed') | list | length) }}/{{ turn.checks | length }} passed)
+        </h4>
         <ul class="checks">
           {% for c in turn.checks %}
           <li class="{{ 'pass' if c.passed else 'fail' }}">{{ c.check }}{% if c.explanation %} &mdash; <span class="small">{{ c.explanation }}</span>{% endif %}</li>
@@ -153,39 +183,18 @@
 <div class="empty">No scenarios.</div>
 {% endfor %}
 
-<h2>Divergence Summary</h2>
-<h3>Unexpected ({{ unexpected_divergences | length }})</h3>
-{% if unexpected_divergences %}
+<h2>Standard NLP-check failures ({{ standard_failures | length }})</h2>
+{% if standard_failures %}
 <div class="scenario">
-  {% for d in unexpected_divergences %}
+  {% for f in standard_failures %}
   <div class="divergence-entry">
-    <div><strong>{{ d.scenario_name }}</strong> <span class="small">turn {{ d.turn_index }} run {{ d.run_index + 1 }}</span>
-      <span class="badge fail">{{ d.divergence_type }}</span>
+    <div>
+      <strong>{{ f.scenario_name }}</strong>
+      <span class="small">turn {{ f.turn_index }} run {{ f.run_index + 1 }}</span>
+      &middot; <code class="small">{{ f.id }}</code>
     </div>
-    <div class="kv">
-      <span class="k">Golden</span><span class="text">{{ d.golden }}</span>
-      <span class="k">Actual</span><span class="text">{{ d.actual }}</span>
-    </div>
-  </div>
-  {% endfor %}
-</div>
-{% else %}
-<div class="empty">None.</div>
-{% endif %}
-
-<h3>Expected ({{ expected_divergences | length }})</h3>
-{% if expected_divergences %}
-<div class="scenario">
-  {% for d in expected_divergences %}
-  <div class="divergence-entry">
-    <div><strong>{{ d.scenario_name }}</strong> <span class="small">turn {{ d.turn_index }} run {{ d.run_index + 1 }}</span>
-      <span class="badge accent">{{ d.divergence_type }}</span>
-    </div>
-    <div class="kv">
-      <span class="k">Golden</span><span class="text">{{ d.golden }}</span>
-      <span class="k">Actual</span><span class="text">{{ d.actual }}</span>
-      {% if d.note %}<span class="k">Note</span><span class="small">{{ d.note }}</span>{% endif %}
-    </div>
+    <div class="small">{{ f.question }}</div>
+    {% if f.explanation %}<div class="small" style="color: var(--muted); margin-top: 2px;">{{ f.explanation }}</div>{% endif %}
   </div>
   {% endfor %}
 </div>
@@ -208,12 +217,10 @@
     <span class="k">Turn</span><span>{{ f.first_failing.turn_index }}</span>
     <span class="k">Golden</span><span class="text">{{ f.first_failing.golden_response }}</span>
     <span class="k">Actual</span><span class="text">{{ f.first_failing.actual_response or '(empty)' }}</span>
+    {% if f.first_failing.exact_match is sameas false %}
+    <span class="k">Match</span><span><span class="badge fail">exact-match MISMATCH</span></span>
+    {% endif %}
   </div>
-  <ul class="checks">
-    {% for c in f.first_failing.checks %}
-    <li class="{{ 'pass' if c.passed else 'fail' }}">{{ c.check }}{% if c.explanation %} &mdash; <span class="small">{{ c.explanation }}</span>{% endif %}</li>
-    {% endfor %}
-  </ul>
   {% endif %}
   {% if f.outcome_failures %}
   <h3>Failed outcome checks</h3>

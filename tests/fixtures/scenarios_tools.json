@@ -1,15 +1,15 @@
 {
-  "version": "1.0",
+  "version": "2.0",
   "scenarios": [
     {
       "id": "sc-tools-1",
       "name": "Booking with weather + availability + book_table",
-      "description": "One unordered loop of 2 tools, then one ordered loop of 1 tool.",
+      "description": "One unordered loop of 2 tools, then one ordered loop of 1 tool. The agent text turn uses may_diverge:false (verbatim golden expected).",
       "source_transcript_id": null,
       "tags": ["tools"],
       "turns": [
         {
-          "role": "customer",
+          "role": "user",
           "message": "Book me a table for 2 at 7pm, indoor if it's raining.",
           "intent": "initiate_booking_with_weather_check"
         },
@@ -53,7 +53,7 @@
           ],
           "golden_response": "Booked - corner table for 2 at 7pm, indoor (reference X-7).",
           "checks": [
-            "Agent confirms the booking with correct details"
+            "Response confirms the booking with correct details (party size, time, seating)."
           ],
           "may_diverge": false
         }

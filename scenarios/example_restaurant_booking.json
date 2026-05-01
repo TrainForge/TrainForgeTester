@@ -1,30 +1,26 @@
 {
-  "version": "1.0",
+  "version": "2.0",
   "scenarios": [
     {
       "id": "sc-001",
       "name": "Restaurant booking - evening table with weather check",
-      "description": "Customer books a table for 2 at 7pm. Before recommending seating the agent must check the weather and availability (unordered). Before confirming, the agent must call book_table.",
+      "description": "User books a table for 2 at 7pm. Before recommending seating the agent must check the weather and availability (unordered). Before confirming, the agent must call book_table. The weather/availability turn is may_diverge:true (free-form rephrasing); the other turns expect verbatim golden replies.",
       "source_transcript_id": "tx-042",
       "tags": ["booking", "weather", "seating", "tools"],
 
       "turns": [
         {
-          "role": "customer",
+          "role": "user",
           "message": "Hi, I'd like to book a table for tonight",
           "intent": "initiate_booking"
         },
         {
           "role": "agent",
           "golden_response": "Of course! How many guests will be joining and what time would you prefer?",
-          "checks": [
-            "Agent acknowledges the booking request",
-            "Agent asks about party size or preferred time"
-          ],
-          "may_diverge": false
+          "checks": []
         },
         {
-          "role": "customer",
+          "role": "user",
           "message": "2 people, around 7pm. How's the weather looking for outdoor seating?",
           "intent": "provide_booking_details_and_ask_weather"
         },
@@ -58,14 +54,14 @@
           ],
           "golden_response": "Tonight's forecast shows cold and rainy weather. I'd recommend our indoor seating - we have some lovely window tables available.",
           "checks": [
-            "Agent reports weather conditions for the evening",
-            "Agent makes a seating recommendation based on weather"
+            "Response mentions that the evening weather is cold or rainy.",
+            "Response recommends indoor (rather than outdoor) seating."
           ],
           "may_diverge": true,
-          "divergence_note": "Weather and availability come from tools; the STRUCTURE (report weather + recommend seating) matters, not the specific details."
+          "divergence_note": "Weather and availability come from tools; the agent may rephrase. The 20 standard NLP-consistency checks judge how close the actual phrasing is to the golden, plus the two custom checks above gate on the structurally-required content (weather sentiment + indoor recommendation)."
         },
         {
-          "role": "customer",
+          "role": "user",
           "message": "OK, indoor sounds good. Can I get the corner table?",
           "intent": "confirm_indoor_seating_request_specific_table"
         },
@@ -89,12 +85,7 @@
             }
           ],
           "golden_response": "Great choice! I've booked the corner table for 2 at 7pm, indoor seating. Your confirmation number is A1234. Is there anything else I can help with?",
-          "checks": [
-            "Agent confirms the booking with correct details (2 people, 7pm, indoor)",
-            "Agent provides a confirmation number or reference",
-            "Agent confirms the specific table requested (corner table)"
-          ],
-          "may_diverge": false
+          "checks": []
         }
       ],
 

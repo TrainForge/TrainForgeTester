@@ -49,54 +49,38 @@ def diverge_server(small_scenarios_path: Path):
 # ---------------------------------------------------------------------------
 
 
+def _count_questions(user_prompt: str) -> int:
+    """Both turn-eval and outcome-eval prompts include a numbered list. Count
+    the questions by counting the lines that match ``N. ``."""
+    import re as _re
+
+    matches = _re.findall(r"^\d+\. ", user_prompt, flags=_re.MULTILINE)
+    return len(matches)
+
+
 class _AutoPassLLM:
+    """Stub that returns 'all pass' in the v0.2 compact format.
+
+    Inspects the prompt to figure out how many questions to answer, then
+    returns ``{"r": [1] * n, "f": {}}``.
+    """
+
     model = "fake-pass"
 
     def complete(self, system: str, user: str) -> str:
-        if "OUTCOME CHECKS" in user:
-            return json.dumps(
-                {
-                    "checks": [
-                        {"check": "o1", "pass": True, "explanation": ""},
-                        {"check": "o2", "pass": True, "explanation": ""},
-                    ]
-                }
-            )
-        return json.dumps(
-            {
-                "consistency_score": 5,
-                "divergence_type": "none",
-                "checks": [
-                    {"check": f"c{i}", "pass": True, "explanation": ""}
-                    for i in range(3)
-                ],
-            }
-        )
+        n = _count_questions(user) or 1
+        return json.dumps({"r": [1] * n, "f": {}})
 
 
 class _AutoFailLLM:
+    """Stub that fails every question in the v0.2 compact format."""
+
     model = "fake-fail"
 
     def complete(self, system: str, user: str) -> str:
-        if "OUTCOME CHECKS" in user:
-            return json.dumps(
-                {
-                    "checks": [
-                        {"check": "o1", "pass": False, "explanation": "missing"},
-                        {"check": "o2", "pass": False, "explanation": "missing"},
-                    ]
-                }
-            )
-        return json.dumps(
-            {
-                "consistency_score": 2,
-                "divergence_type": "factual_difference",
-                "checks": [
-                    {"check": f"c{i}", "pass": False, "explanation": "wrong"}
-                    for i in range(3)
-                ],
-            }
-        )
+        n = _count_questions(user) or 1
+        failures = {str(i): "stubbed failure" for i in range(1, n + 1)}
+        return json.dumps({"r": [0] * n, "f": failures})
 
 
 @pytest.fixture
@@ -143,7 +127,7 @@ def test_run_against_golden_mock_all_pass(
     )
     assert result.exit_code == 0, result.output
     data = json.loads(out_path.read_text())
-    assert data["version"] == "1.0"
+    assert data["version"] == "2.0"
     assert data["summary"]["total_scenarios"] == 1
     assert data["summary"]["passed"] == 1
     assert data["summary"]["failed"] == 0

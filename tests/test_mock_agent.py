@@ -25,22 +25,22 @@ def golden_server(small_scenarios_path: Path):
 
 
 def test_golden_mode_returns_exact_golden(golden_server, small_scenarios) -> None:
-    first_customer = small_scenarios["scenarios"][0]["turns"][0]["message"]
+    first_user = small_scenarios["scenarios"][0]["turns"][0]["message"]
     first_golden = small_scenarios["scenarios"][0]["turns"][1]["golden_response"]
 
     resp = requests.post(
         golden_server.url,
-        json={"messages": [{"role": "customer", "content": first_customer}]},
+        json={"messages": [{"role": "user", "content": first_user}]},
         timeout=5.0,
     )
     assert resp.status_code == 200
     assert resp.json() == {"response": first_golden}
 
 
-def test_unknown_customer_message_returns_404(golden_server) -> None:
+def test_unknown_user_message_returns_404(golden_server) -> None:
     resp = requests.post(
         golden_server.url,
-        json={"messages": [{"role": "customer", "content": "totally unknown"}]},
+        json={"messages": [{"role": "user", "content": "totally unknown"}]},
         timeout=5.0,
     )
     assert resp.status_code == 404
@@ -57,11 +57,11 @@ def test_diverge_mode_returns_perturbed(small_scenarios_path: Path, small_scenar
     server = MockAgentServer(str(small_scenarios_path), port=_free_port(), mode="diverge", seed=1)
     server.start()
     try:
-        first_customer = small_scenarios["scenarios"][0]["turns"][0]["message"]
+        first_user = small_scenarios["scenarios"][0]["turns"][0]["message"]
         first_golden = small_scenarios["scenarios"][0]["turns"][1]["golden_response"]
         resp = requests.post(
             server.url,
-            json={"messages": [{"role": "customer", "content": first_customer}]},
+            json={"messages": [{"role": "user", "content": first_user}]},
             timeout=5.0,
         )
         assert resp.status_code == 200
@@ -82,10 +82,10 @@ def test_error_mode_eventually_returns_error_status(small_scenarios_path: Path, 
     )
     server.start()
     try:
-        first_customer = small_scenarios["scenarios"][0]["turns"][0]["message"]
+        first_user = small_scenarios["scenarios"][0]["turns"][0]["message"]
         resp = requests.post(
             server.url,
-            json={"messages": [{"role": "customer", "content": first_customer}]},
+            json={"messages": [{"role": "user", "content": first_user}]},
             timeout=5.0,
         )
         assert resp.status_code == 500
@@ -107,12 +107,12 @@ def tools_server(tools_scenarios_path: Path):
 
 
 def test_golden_mock_emits_tool_calls_for_tool_loops(tools_server) -> None:
-    customer_msg = "Book me a table for 2 at 7pm, indoor if it's raining."
+    user_msg = "Book me a table for 2 at 7pm, indoor if it's raining."
 
     # Round 1: empty history -> mock should emit a tool_call for loop 0.
     resp = requests.post(
         tools_server.url,
-        json={"messages": [{"role": "customer", "content": customer_msg}]},
+        json={"messages": [{"role": "user", "content": user_msg}]},
         timeout=5.0,
     )
     assert resp.status_code == 200
@@ -124,9 +124,9 @@ def test_golden_mock_emits_tool_calls_for_tool_loops(tools_server) -> None:
 
 
 def test_golden_mock_advances_after_tool_responses(tools_server) -> None:
-    customer_msg = "Book me a table for 2 at 7pm, indoor if it's raining."
+    user_msg = "Book me a table for 2 at 7pm, indoor if it's raining."
     history = [
-        {"role": "customer", "content": customer_msg},
+        {"role": "user", "content": user_msg},
         {
             "role": "agent",
             "content": "",
@@ -149,9 +149,9 @@ def test_golden_mock_advances_after_tool_responses(tools_server) -> None:
 
 
 def test_golden_mock_emits_final_text_after_all_tools(tools_server) -> None:
-    customer_msg = "Book me a table for 2 at 7pm, indoor if it's raining."
+    user_msg = "Book me a table for 2 at 7pm, indoor if it's raining."
     history = [
-        {"role": "customer", "content": customer_msg},
+        {"role": "user", "content": user_msg},
         {
             "role": "agent",
             "content": "",

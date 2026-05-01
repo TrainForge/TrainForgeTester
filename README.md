@@ -1,18 +1,36 @@
 # TrainForge
 
-Open-source test runner for conversational agents. Runs hand-written or generated scenarios against a live agent API, evaluates each turn against a golden transcript via LLM classification, and reports consistency, divergence, and regressions.
+**Deterministic-first agent regression testing.** Hand-written or generated scenarios run against a live agent API; structural agent behavior is checked by Python equality (no LLM, no flakiness), and only natural-language consistency between the agent's actual reply and the golden reply is delegated to an LLM — and even then as a fixed list of binary yes/no questions, never as a fuzzy 0-1 score.
 
 ## What it does
 
 - Executes multi-turn scenarios against your agent's HTTP API.
-- Uses **golden injection**: after every agent turn the runner feeds the agent the golden reference response on subsequent turns, so a divergence at turn 2 does not corrupt evaluation at turns 4, 6, 8. Each turn is tested in a clean context.
-- Tests **tool calls**: scenarios can declare `tool_loops` - ordered or unordered groups of tool calls the agent must make before the next text turn. The runner validates each call deterministically (name + type + exact `expected` argument values, no LLM involvement), injects the golden tool result, and reports per-tool pass / wrong_tool / invalid_arguments / missing.
-- Evaluates each agent text turn with one batched LLM call (consistency score 1-5 + per-check pass/fail + divergence type).
-- Evaluates the overall outcome of the actual conversation with a second LLM call.
-- Scores scenarios as PASS / PARTIAL / FAIL and aggregates consistency across runs.
+- Uses **golden injection**: after every agent turn the runner feeds the agent the golden reference response on subsequent turns, so a divergence at turn 2 doesn't corrupt evaluation at turns 4, 6, 8. Each turn is tested in a clean context.
+- Tests **tool calls deterministically**: scenarios declare `tool_loops` — ordered or unordered groups of tool calls the agent must make before the next text turn. Tool name, types, and exact `expected` argument values are checked by Python equality, no LLM in the path. Reports per-tool `pass` / `wrong_tool` / `invalid_arguments` / `missing` / `unexpected_tool`.
+- Tests **agent text two ways**, controlled per-turn by `may_diverge`:
+  - **`may_diverge: false` (default)** — exact `==` match between actual and golden. Use for curated/scripted replies (legal copy, fixed FAQ, compliance disclosures). Zero LLM calls for the text equivalence check.
+  - **`may_diverge: true`** — runs the **20 standard NLP-consistency checks** (same language, same intent, same speech act, no added/omitted facts, comparable register/tone/length, etc.) plus any per-scenario custom checks. ONE batched LLM call per turn returns binary `1`/`0` for each question in a compact JSON array. No 0-1 quality scores, ever.
+- Evaluates the overall outcome of the actual conversation with one more batched LLM call (also binary).
+- Scores scenarios as PASS / PARTIAL / FAIL and aggregates consistency across `--runs N`.
 - Renders an HTML report and a regression-diff HTML report.
 
-**BYO-key.** TrainForge never touches your LLM key. Static mode talks only to your agent and to the LLM you point it at.
+**BYO-key.** TrainForge never touches your LLM key. Static mode talks only to your agent and to the LLM you point it at (Anthropic / NVIDIA / Cerebras supported out of the box).
+
+## Why deterministic-first
+
+Most "LLM-as-judge" frameworks ask the model to score quality on a 0-1 scale. That score moves run to run on the exact same input — not because the agent changed but because the judge is non-deterministic. TrainForge sidesteps this for everything that doesn't actually need a judge:
+
+| Failure surface | How TrainForge checks it |
+|---|---|
+| Wrong tool called | Python string equality on tool name. |
+| Wrong tool arguments | Python `==` on the declared `expected` literal + type check. |
+| Tool called in wrong slot | Position match in ordered loop, or set match in unordered loop. |
+| Verbatim agent reply mismatch | Python `actual == golden` on the response text. |
+| Required tool never called | Loop position never matched after the agent finished the round. |
+| End-state of the conversation | Per-scenario `outcome_checks` (LLM-judged binary). |
+| Free-form agent rephrasing of golden | 20 fixed binary NLP-consistency questions per turn (LLM-judged). |
+
+Every LLM-judged claim in the system is a yes/no question with a stable id. No 0-1 scores, no judge "reasoning" appears in the verdict — only `1` or `0` plus a brief reason for failures.
 
 ## Install
 
@@ -101,26 +119,26 @@ trainforge mock-agent \
   --mode golden       # or: diverge | error
 ```
 
-- `golden` - returns the scenario's golden response for each customer message. Every scenario should PASS.
-- `diverge` - perturbs the golden response deterministically so the evaluator sees divergences.
+- `golden` - returns the scenario's golden response for each user message. Every scenario should PASS.
+- `diverge` - perturbs the golden response deterministically so the standard NLP-consistency checks see divergences.
 - `error` - returns HTTP 500 and delays randomly to exercise the runner's error handling.
 
-## Scenario format
+## Scenario format (v2.0)
 
-Hand-authored scenarios are welcome; `version: "1.0"` is required. The runner validates scenarios up front and refuses unknown versions.
+Hand-authored scenarios are welcome; `version: "2.0"` is required. The runner validates scenarios up front and refuses unknown versions.
 
 Minimal text-only scenario:
 
 ```json
 {
-  "version": "1.0",
+  "version": "2.0",
   "scenarios": [
     {
       "id": "sc-001",
       "name": "...",
       "turns": [
-        {"role": "customer", "message": "...", "intent": "..."},
-        {"role": "agent", "golden_response": "...", "checks": ["..."], "may_diverge": false}
+        {"role": "user", "message": "...", "intent": "..."},
+        {"role": "agent", "golden_response": "...", "checks": ["..."]}
       ],
       "expected_outcome": "...",
       "outcome_checks": ["..."]
@@ -128,6 +146,57 @@ Minimal text-only scenario:
   ]
 }
 ```
+
+### Two text-evaluation modes per agent turn
+
+Every `agent` turn carries `may_diverge` (default `false`):
+
+| `may_diverge` | Behavior | When to use |
+|---|---|---|
+| `false` (default) | Python `==` between actual and golden text. Failure -> `exact_match: false`. **Zero LLM calls** for the equivalence check. | Curated/scripted replies: legal disclaimers, fixed FAQ answers, policy-mandated responses. |
+| `true` | The 20 standard NLP-consistency checks (see below) plus any per-scenario custom `checks`, batched into ONE LLM call returning binary `1`/`0` per question. | Open-ended replies that may legitimately rephrase the golden but should preserve intent, content, register, etc. |
+
+### The 20 standard NLP-consistency checks
+
+Applied automatically to every `may_diverge: true` agent turn. All 20 are binary comparisons of the actual AI response against the golden AI response:
+
+| id | what it checks |
+|---|---|
+| `same_language` | Same natural language. |
+| `same_speech_act` | Same speech act (statement / question / confirmation / request / promise / apology / refusal). |
+| `same_intent` | Same communicative intent. |
+| `same_action_state` | Same action state (not started / pending / in progress / completed / failed). |
+| `same_next_step` | Same next step prompted from the user (or both signal "no next step"). |
+| `same_propositional_content` | Same set of factual claims. |
+| `no_added_facts` | No factual claims in actual that aren't in golden. |
+| `no_omitted_facts` | No factual claims from golden that are missing in actual. |
+| `no_contradictions` | Doesn't contradict any claim in golden. |
+| `same_named_entities` | Same people / places / products / orgs referenced. |
+| `same_numerics` | Numbers, dates, times, codes, IDs match. |
+| `same_call_to_action` | Both contain (or omit) the same CTA. |
+| `same_disclosures` | Both include (or omit) the same disclosures / caveats / warnings. |
+| `comparable_register` | Same register (formal / casual / technical / consumer). |
+| `comparable_tone` | Same tone (polite / curt / empathetic / neutral / enthusiastic). |
+| `comparable_specificity` | Same specificity (concrete details vs generic placeholders). |
+| `comparable_hedging` | Same level of confidence/hedging (decisive vs tentative). |
+| `comparable_length` | Length within ~0.5x to 2x of golden. |
+| `same_persona` | Same persona/voice; neither breaks character. |
+| `same_information_order` | Same ordering of major information units. |
+
+Source of truth: [`src/trainforge/standard_checks.py`](src/trainforge/standard_checks.py). The list is hard-coded and stable; check `id` values are part of the public results contract.
+
+### Compact LLM wire format
+
+Every LLM call (per-turn standard+custom batch, custom-only on exact-match turns, outcome eval) uses the same compact JSON shape:
+
+```json
+{"r": [1, 1, 0, 1, 1, ...], "f": {"3": "different language"}}
+```
+
+- `r` is a positional array of `1` (pass) and `0` (fail), length must equal the number of asked questions.
+- `f` maps the 1-based index of failed questions to a brief reason. Pass questions get no entry.
+
+For 20 standard checks all passing the response is ~30 output tokens. Replaces the v1.x "1-5 score + divergence_type + per-check JSON" format which produced 150-500 tokens per call.
 
 ### Tool-call extension
 
@@ -174,8 +243,7 @@ Each `agent` turn may declare zero or more `tool_loops` that must complete *befo
     }
   ],
   "golden_response": "Booked! Corner table for 2 at 7pm, indoor (A1234).",
-  "checks": ["Agent confirms with a reference code"],
-  "may_diverge": false
+  "checks": ["Response confirms the booking with a reference code"]
 }
 ```
 
@@ -227,11 +295,11 @@ Content-Type: application/json
 Request:
 {
   "messages": [
-    {"role": "customer", "content": "..."},
-    {"role": "agent",    "content": "..."},
-    {"role": "agent",    "content": "", "tool_calls": [{"id": "call_1", "name": "check_weather", "arguments": {"when": "tonight"}}]},
-    {"role": "tool",     "tool_call_id": "call_1", "name": "check_weather", "content": "Tonight: cold and rainy."},
-    {"role": "customer", "content": "..."}
+    {"role": "user",  "content": "..."},
+    {"role": "agent", "content": "..."},
+    {"role": "agent", "content": "", "tool_calls": [{"id": "call_1", "name": "check_weather", "arguments": {"when": "tonight"}}]},
+    {"role": "tool",  "tool_call_id": "call_1", "name": "check_weather", "content": "Tonight: cold and rainy."},
+    {"role": "user",  "content": "..."}
   ]
 }
 
@@ -254,6 +322,18 @@ Errors are mapped as follows:
 | Agent returns empty body    | Treat as divergence. All checks fail. Continue.     |
 | LLM returns unparseable JSON| Retry with stricter prompt. Mark `eval_error`.      |
 | Malformed scenarios file    | Refuse to start.                                    |
+
+## Migrating from v1.x scenarios
+
+If you have v1.x scenario JSON files, two changes are required to load under v0.2:
+
+1. Bump `"version": "1.0"` to `"version": "2.0"` at the top.
+2. Rename every `"role": "customer"` to `"role": "user"`.
+
+Behavioral defaults flipped:
+
+- `may_diverge` now defaults to `false` instead of `true` (v1.x had it as a per-turn opt-in but the example scenario set it to `true` on the weather turn). Most scripted-reply scenarios will just *work* better under v0.2 — but if you depended on the LLM-evaluated behavior, set `may_diverge: true` explicitly per turn.
+- `consistency_score` (1-5) and `divergence_type` are gone from `results.json`. They are replaced by `exact_match: true|false|null` and `standard_check_results: [...]`. The HTML report renders the new shape.
 
 ## Developing
 

@@ -9,41 +9,64 @@ import pytest
 from trainforge.errors import MalformedScenarioError, UnsupportedScenarioVersionError
 from trainforge.schema import (
     AgentTurn,
-    CustomerTurn,
+    UserTurn,
     load_scenarios,
     parse_scenarios,
 )
 
 
 def test_example_scenario_from_spec_parses(example_scenarios_path: Path) -> None:
-    """The example shipped in the repo is a valid v1.0 scenarios file."""
+    """The example shipped in the repo is a valid v2.0 scenarios file."""
     file = load_scenarios(example_scenarios_path)
-    assert file.version == "1.0"
+    assert file.version == "2.0"
     assert len(file.scenarios) == 1
 
     sc = file.scenarios[0]
     assert sc.id == "sc-001"
     assert len(sc.turns) == 6
-    assert isinstance(sc.turns[0], CustomerTurn)
+    assert isinstance(sc.turns[0], UserTurn)
     assert isinstance(sc.turns[1], AgentTurn)
+    # The weather turn (index 3) is the only may_diverge turn in the example.
     assert sc.turns[3].may_diverge is True  # type: ignore[union-attr]
 
 
 def test_small_fixture_parses(small_scenarios_path: Path) -> None:
     file = load_scenarios(small_scenarios_path)
     assert len(file.scenarios) == 1
-    assert file.scenarios[0].turns[0].role == "customer"
+    assert file.scenarios[0].turns[0].role == "user"
+
+
+def test_may_diverge_default_is_false() -> None:
+    """v2.0 flips the default to deterministic exact-match."""
+    raw = {
+        "version": "2.0",
+        "scenarios": [
+            {
+                "id": "x",
+                "name": "x",
+                "turns": [
+                    {"role": "user", "message": "hi"},
+                    {"role": "agent", "golden_response": "hi back", "checks": []},
+                ],
+                "expected_outcome": "x",
+            }
+        ],
+    }
+    sc = parse_scenarios(raw).scenarios[0]
+    agent_turn = sc.turns[1]
+    assert isinstance(agent_turn, AgentTurn)
+    assert agent_turn.may_diverge is False
 
 
 def test_version_mismatch_raises() -> None:
-    raw = {"version": "2.0", "scenarios": []}
+    raw = {"version": "1.0", "scenarios": []}
     with pytest.raises(UnsupportedScenarioVersionError):
         parse_scenarios(raw)
 
 
-def test_turns_must_start_with_customer() -> None:
+def test_turns_must_start_with_user() -> None:
     raw = {
-        "version": "1.0",
+        "version": "2.0",
         "scenarios": [
             {
                 "id": "bad",
@@ -61,14 +84,14 @@ def test_turns_must_start_with_customer() -> None:
 
 def test_turns_must_alternate() -> None:
     raw = {
-        "version": "1.0",
+        "version": "2.0",
         "scenarios": [
             {
                 "id": "bad",
                 "name": "bad",
                 "turns": [
-                    {"role": "customer", "message": "hi"},
-                    {"role": "customer", "message": "hi again"},
+                    {"role": "user", "message": "hi"},
+                    {"role": "user", "message": "hi again"},
                 ],
                 "expected_outcome": "x",
             }
@@ -80,13 +103,13 @@ def test_turns_must_alternate() -> None:
 
 def test_unknown_field_is_rejected() -> None:
     raw = {
-        "version": "1.0",
+        "version": "2.0",
         "scenarios": [
             {
                 "id": "bad",
                 "name": "bad",
                 "turns": [
-                    {"role": "customer", "message": "hi", "bogus": "x"},
+                    {"role": "user", "message": "hi", "bogus": "x"},
                     {"role": "agent", "golden_response": "ok", "checks": []},
                 ],
                 "expected_outcome": "x",
@@ -134,8 +157,6 @@ def test_results_roundtrip(tmp_path: Path) -> None:
             inconsistent=0,
             pass_rate=1.0,
             overall_consistency=1.0,
-            unexpected_divergences=0,
-            expected_divergences=0,
         ),
         scenarios=[
             ScenarioResult(
@@ -159,6 +180,6 @@ def test_results_roundtrip(tmp_path: Path) -> None:
     loaded = load_results(path)
     assert loaded.summary.passed == 1
     assert loaded.scenarios[0].scenario_id == "a"
-    # Ensure it round-trips to stable JSON.
     again = json.loads(path.read_text())
     assert again["summary"]["passed"] == 1
+    assert again["version"] == "2.0"

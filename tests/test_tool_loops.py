@@ -1,4 +1,4 @@
-"""Tool-loop semantics and golden-injection for tool_calls (v1.1)."""
+"""Tool-loop semantics and golden-injection for tool_calls (v0.2)."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -216,10 +216,10 @@ def test_full_run_tool_loops_pass(tools_scenarios_path: Path, fake_llm) -> None:
             AgentReply(text="Booked - corner table for 2 at 7pm, indoor (reference X-7)."),
         ]
     )
-    # Tool-call validation is purely deterministic; only the text turn +
-    # outcome eval hit the LLM.
-    fake_llm.queue_turn(consistency_score=5, checks=[("c", True, "")])
-    fake_llm.queue_outcome([("o1", True, ""), ("o2", True, "")])
+    # may_diverge=False on the agent turn -> exact-match path. The 1 custom
+    # check still gets evaluated via LLM. Outcome eval also runs.
+    fake_llm.queue_compact([1])      # 1 custom check passes
+    fake_llm.queue_compact([1, 1])   # outcome: both checks pass
 
     runner = ScenarioRunner(agent=agent, llm=fake_llm)  # type: ignore[arg-type]
     result = runner.run_scenario(scenario, runs=1)
@@ -230,6 +230,7 @@ def test_full_run_tool_loops_pass(tools_scenarios_path: Path, fake_llm) -> None:
     turn = run.turns[0]
     assert [tc.status for tc in turn.tool_calls] == ["pass", "pass", "pass"]
     assert [tc.loop_index for tc in turn.tool_calls] == [0, 0, 1]
+    assert turn.exact_match is True
 
 
 def test_wrong_tool_reports_failure_but_injects_golden(
@@ -262,12 +263,12 @@ def test_wrong_tool_reports_failure_but_injects_golden(
                     )
                 ],
             ),
-            # Final text.
+            # Final text (intentionally different from golden -> exact_match=False).
             AgentReply(text="Booked - X-7."),
         ]
     )
-    fake_llm.queue_turn(consistency_score=4, checks=[("c", True, "")])
-    fake_llm.queue_outcome([("o1", True, ""), ("o2", True, "")])
+    fake_llm.queue_compact([1])      # 1 custom check
+    fake_llm.queue_compact([1, 1])   # outcome
 
     runner = ScenarioRunner(agent=agent, llm=fake_llm)  # type: ignore[arg-type]
     result = runner.run_scenario(scenario, runs=1)
@@ -330,8 +331,8 @@ def test_missing_tool_when_agent_emits_text_early(
             AgentReply(text="Booked - X-7."),
         ]
     )
-    fake_llm.queue_turn(consistency_score=4, checks=[("c", True, "")])
-    fake_llm.queue_outcome([("o1", True, ""), ("o2", True, "")])
+    fake_llm.queue_compact([1])      # 1 custom check
+    fake_llm.queue_compact([1, 1])   # outcome
 
     runner = ScenarioRunner(agent=agent, llm=fake_llm)  # type: ignore[arg-type]
     result = runner.run_scenario(scenario, runs=1)
@@ -370,8 +371,8 @@ def test_invalid_arguments_records_failure(
             AgentReply(text="Booked - X-7."),
         ]
     )
-    fake_llm.queue_turn(consistency_score=5, checks=[("c", True, "")])
-    fake_llm.queue_outcome([("o1", True, ""), ("o2", True, "")])
+    fake_llm.queue_compact([1])      # 1 custom check
+    fake_llm.queue_compact([1, 1])   # outcome
 
     runner = ScenarioRunner(agent=agent, llm=fake_llm)  # type: ignore[arg-type]
     result = runner.run_scenario(scenario, runs=1)
@@ -507,8 +508,8 @@ def test_wrong_expected_value_fails_run(
             AgentReply(text="Booked!"),
         ]
     )
-    fake_llm.queue_turn(consistency_score=5, checks=[("c", True, "")])
-    fake_llm.queue_outcome([("o1", True, ""), ("o2", True, "")])
+    fake_llm.queue_compact([1])      # 1 custom check
+    fake_llm.queue_compact([1, 1])   # outcome
 
     runner = ScenarioRunner(agent=agent, llm=fake_llm)  # type: ignore[arg-type]
     result = runner.run_scenario(scenario, runs=1)
@@ -551,10 +552,11 @@ def test_no_llm_calls_for_tool_argument_validation(
             AgentReply(text="Booked - X-7."),
         ]
     )
-    fake_llm.queue_turn(consistency_score=5, checks=[("c", True, "")])
-    fake_llm.queue_outcome([("o1", True, ""), ("o2", True, "")])
+    fake_llm.queue_compact([1])      # 1 custom check
+    fake_llm.queue_compact([1, 1])   # outcome
 
     runner = ScenarioRunner(agent=agent, llm=fake_llm)  # type: ignore[arg-type]
     runner.run_scenario(scenario, runs=1)
-    # 1 turn eval + 1 outcome eval -> exactly 2 LLM calls.
+    # 1 custom-check eval + 1 outcome eval -> exactly 2 LLM calls.
+    # Tool-call validation never hits the LLM (deterministic).
     assert len(fake_llm.calls) == 2

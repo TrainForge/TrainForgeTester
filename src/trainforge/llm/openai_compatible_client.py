@@ -2,8 +2,11 @@
 
 Defaults are tuned for speed on classification workloads:
 
-- ``max_tokens=512`` - the evaluator prompts in :mod:`trainforge.llm.prompts`
-  produce ~150 output tokens of JSON; 512 is plenty of headroom.
+- ``max_tokens=1024`` - the v0.2 compact-format eval output is ~50 tokens of
+  visible content for a fully-passing turn (21 binary results + a tiny
+  failures map). 1024 leaves comfortable headroom for reasoning models
+  (e.g. GLM-4.7 on Cerebras) that consume a chunk of the budget on hidden
+  reasoning tokens before emitting the final JSON.
 - ``temperature=0.0`` - classification is deterministic; high temperature
   buys us nothing and wastes tokens.
 - ``timeout=60`` seconds - fail fast if the endpoint hangs (some hosted
@@ -28,7 +31,7 @@ class OpenAICompatibleClient:
     api_key: str
     base_url: str = "https://integrate.api.nvidia.com/v1"
     model: str = NVIDIA_DEFAULT_MODEL
-    max_tokens: int = 512
+    max_tokens: int = 1024
     timeout_seconds: float = 60.0
     temperature: float = 0.0
     extra_body: dict[str, Any] | None = None
