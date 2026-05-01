@@ -91,8 +91,8 @@ def _load_dotenv_from_tree() -> None:
     default=None,
     envvar="OPENAI_API_URL",
     help=(
-        "Base URL OpenAI-compatible API (например, https://api.openai.com/v1). "
-        "Можно задать через $OPENAI_API_URL."
+        "Base URL for an OpenAI-compatible API (for example, https://api.openai.com/v1). "
+        "You can also set it via $OPENAI_API_URL."
     ),
 )
 @click.option(
@@ -100,13 +100,13 @@ def _load_dotenv_from_tree() -> None:
     default=None,
     envvar="OPENAI_API_KEY",
     help=(
-        "API key OpenAI-compatible провайдера. Можно задать через $OPENAI_API_KEY."
+        "API key for the OpenAI-compatible provider. You can also set it via $OPENAI_API_KEY."
     ),
 )
 @click.option(
     "--llm-model",
     default=None,
-    help=f"Evaluator model id. По умолчанию: {OPENAI_COMPAT_DEFAULT_MODEL!r}.",
+    help=f"Evaluator model ID. Default: {OPENAI_COMPAT_DEFAULT_MODEL!r}.",
 )
 @click.option("--runs", type=click.IntRange(min=1), default=1, show_default=True, help="Number of runs per scenario for consistency.")
 @click.option("--timeout", "timeout_seconds", type=click.FloatRange(min=1.0), default=30.0, show_default=True, help="Per-request agent timeout in seconds.")
