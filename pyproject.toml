@@ -1,0 +1,56 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "trainforge"
+version = "0.1.0"
+description = "Open-source TrainForge test runner for conversational agents (static mode)."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "TrainForge" }]
+keywords = ["testing", "llm", "agents", "evaluation", "consistency"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Testing",
+]
+dependencies = [
+    "click>=8.1",
+    "requests>=2.31",
+    "pydantic>=2.5",
+    "jinja2>=3.1",
+    "anthropic>=0.34",
+    "openai>=1.40",
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4",
+    "pytest-cov>=4.1",
+    "responses>=0.24",
+]
+
+[project.scripts]
+trainforge = "trainforge.cli:cli"
+
+[project.urls]
+Homepage = "https://trainforge.co"
+Source = "https://github.com/trainforge/trainforge"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"trainforge.report" = ["templates/*.j2"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+filterwarnings = ["ignore::DeprecationWarning"]

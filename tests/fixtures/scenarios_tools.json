@@ -1,0 +1,68 @@
+{
+  "version": "1.0",
+  "scenarios": [
+    {
+      "id": "sc-tools-1",
+      "name": "Booking with weather + availability + book_table",
+      "description": "One unordered loop of 2 tools, then one ordered loop of 1 tool.",
+      "source_transcript_id": null,
+      "tags": ["tools"],
+      "turns": [
+        {
+          "role": "customer",
+          "message": "Book me a table for 2 at 7pm, indoor if it's raining.",
+          "intent": "initiate_booking_with_weather_check"
+        },
+        {
+          "role": "agent",
+          "tool_loops": [
+            {
+              "ordered": false,
+              "tools": [
+                {
+                  "name": "check_weather",
+                  "arguments_schema": {
+                    "when": {"type": "string"}
+                  },
+                  "expected_response": "Tonight: cold and rainy."
+                },
+                {
+                  "name": "check_availability",
+                  "arguments_schema": {
+                    "party_size": {"type": "integer", "expected": 2},
+                    "time":       {"type": "string"}
+                  },
+                  "expected_response": "Tables: corner (indoor), window (indoor)."
+                }
+              ]
+            },
+            {
+              "ordered": true,
+              "tools": [
+                {
+                  "name": "book_table",
+                  "arguments_schema": {
+                    "party_size": {"type": "integer"},
+                    "time": {"type": "string"},
+                    "seating": {"type": "string"}
+                  },
+                  "expected_response": "Booking confirmed. Reference: X-7."
+                }
+              ]
+            }
+          ],
+          "golden_response": "Booked - corner table for 2 at 7pm, indoor (reference X-7).",
+          "checks": [
+            "Agent confirms the booking with correct details"
+          ],
+          "may_diverge": false
+        }
+      ],
+      "expected_outcome": "Booking confirmed for 2 at 7pm indoor with a reference",
+      "outcome_checks": [
+        "Booking was made",
+        "Reference code provided"
+      ]
+    }
+  ]
+}

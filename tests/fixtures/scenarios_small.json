@@ -1,0 +1,46 @@
+{
+  "version": "1.0",
+  "scenarios": [
+    {
+      "id": "sc-small-1",
+      "name": "Simple booking",
+      "description": "Two-turn booking confirmation for runner-loop tests.",
+      "source_transcript_id": null,
+      "tags": ["booking"],
+      "turns": [
+        {
+          "role": "customer",
+          "message": "Book a table for 2 at 7pm",
+          "intent": "initiate_booking"
+        },
+        {
+          "role": "agent",
+          "golden_response": "Sure! I've booked a table for 2 at 7pm. Your reference is A1234.",
+          "checks": [
+            "Agent confirms the booking with correct details",
+            "Agent provides a confirmation reference"
+          ],
+          "may_diverge": false
+        },
+        {
+          "role": "customer",
+          "message": "Thanks!",
+          "intent": "thank_and_close"
+        },
+        {
+          "role": "agent",
+          "golden_response": "You're welcome. Have a great evening!",
+          "checks": [
+            "Agent acknowledges the thanks politely"
+          ],
+          "may_diverge": false
+        }
+      ],
+      "expected_outcome": "Booking confirmed for 2 at 7pm with a reference code.",
+      "outcome_checks": [
+        "A booking was made for 2 people at 7pm",
+        "A confirmation reference was provided"
+      ]
+    }
+  ]
+}

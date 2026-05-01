@@ -1,0 +1,164 @@
+"""Schema validation tests - the contract with the generator."""
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+
+from trainforge.errors import MalformedScenarioError, UnsupportedScenarioVersionError
+from trainforge.schema import (
+    AgentTurn,
+    CustomerTurn,
+    load_scenarios,
+    parse_scenarios,
+)
+
+
+def test_example_scenario_from_spec_parses(example_scenarios_path: Path) -> None:
+    """The example shipped in the repo is a valid v1.0 scenarios file."""
+    file = load_scenarios(example_scenarios_path)
+    assert file.version == "1.0"
+    assert len(file.scenarios) == 1
+
+    sc = file.scenarios[0]
+    assert sc.id == "sc-001"
+    assert len(sc.turns) == 6
+    assert isinstance(sc.turns[0], CustomerTurn)
+    assert isinstance(sc.turns[1], AgentTurn)
+    assert sc.turns[3].may_diverge is True  # type: ignore[union-attr]
+
+
+def test_small_fixture_parses(small_scenarios_path: Path) -> None:
+    file = load_scenarios(small_scenarios_path)
+    assert len(file.scenarios) == 1
+    assert file.scenarios[0].turns[0].role == "customer"
+
+
+def test_version_mismatch_raises() -> None:
+    raw = {"version": "2.0", "scenarios": []}
+    with pytest.raises(UnsupportedScenarioVersionError):
+        parse_scenarios(raw)
+
+
+def test_turns_must_start_with_customer() -> None:
+    raw = {
+        "version": "1.0",
+        "scenarios": [
+            {
+                "id": "bad",
+                "name": "bad",
+                "turns": [
+                    {"role": "agent", "golden_response": "hi", "checks": []},
+                ],
+                "expected_outcome": "x",
+            }
+        ],
+    }
+    with pytest.raises(MalformedScenarioError):
+        parse_scenarios(raw)
+
+
+def test_turns_must_alternate() -> None:
+    raw = {
+        "version": "1.0",
+        "scenarios": [
+            {
+                "id": "bad",
+                "name": "bad",
+                "turns": [
+                    {"role": "customer", "message": "hi"},
+                    {"role": "customer", "message": "hi again"},
+                ],
+                "expected_outcome": "x",
+            }
+        ],
+    }
+    with pytest.raises(MalformedScenarioError):
+        parse_scenarios(raw)
+
+
+def test_unknown_field_is_rejected() -> None:
+    raw = {
+        "version": "1.0",
+        "scenarios": [
+            {
+                "id": "bad",
+                "name": "bad",
+                "turns": [
+                    {"role": "customer", "message": "hi", "bogus": "x"},
+                    {"role": "agent", "golden_response": "ok", "checks": []},
+                ],
+                "expected_outcome": "x",
+            }
+        ],
+    }
+    with pytest.raises(MalformedScenarioError):
+        parse_scenarios(raw)
+
+
+def test_load_missing_file(tmp_path: Path) -> None:
+    with pytest.raises(MalformedScenarioError):
+        load_scenarios(tmp_path / "nope.json")
+
+
+def test_load_invalid_json(tmp_path: Path) -> None:
+    p = tmp_path / "bad.json"
+    p.write_text("{not json")
+    with pytest.raises(MalformedScenarioError):
+        load_scenarios(p)
+
+
+def test_results_roundtrip(tmp_path: Path) -> None:
+    from trainforge.schema import (
+        OutcomeResult,
+        RunConfig,
+        RunResults,
+        RunSummary,
+        ScenarioResult,
+        ScenarioRunResult,
+        dump_results,
+        load_results,
+    )
+
+    results = RunResults(
+        config=RunConfig(
+            agent_url="http://example", llm_model="fake-1", runs=1, timeout_seconds=30.0
+        ),
+        summary=RunSummary(
+            total_scenarios=1,
+            passed=1,
+            partial=0,
+            failed=0,
+            unreachable=0,
+            inconsistent=0,
+            pass_rate=1.0,
+            overall_consistency=1.0,
+            unexpected_divergences=0,
+            expected_divergences=0,
+        ),
+        scenarios=[
+            ScenarioResult(
+                scenario_id="a",
+                name="a",
+                runs=[
+                    ScenarioRunResult(
+                        run_index=0,
+                        status="pass",
+                        turns=[],
+                        outcome=OutcomeResult(status="evaluated", checks=[]),
+                    )
+                ],
+                consistency=1.0,
+                inconsistent=False,
+            )
+        ],
+    )
+    path = tmp_path / "r.json"
+    dump_results(results, path)
+    loaded = load_results(path)
+    assert loaded.summary.passed == 1
+    assert loaded.scenarios[0].scenario_id == "a"
+    # Ensure it round-trips to stable JSON.
+    again = json.loads(path.read_text())
+    assert again["summary"]["passed"] == 1

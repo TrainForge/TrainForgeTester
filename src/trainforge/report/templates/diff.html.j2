@@ -1,0 +1,96 @@
+{% extends "_base.html.j2" %}
+{% set title = "TrainForge Regression Report" %}
+{% macro bucket_row(entry) %}
+<div class="divergence-entry">
+  <div class="scenario-head">
+    <div>
+      <strong>{{ entry.name }}</strong>
+      <div class="small">id: {{ entry.scenario_id }}</div>
+    </div>
+    <div>
+      <span class="small">before</span>
+      {% if entry.before_pass is none %}
+      <span class="badge neutral">&mdash;</span>
+      {% else %}
+      <span class="badge {{ 'pass' if entry.before_pass else 'fail' }}">
+        {{ 'PASS' if entry.before_pass else 'FAIL' }}{% if entry.before_consistency is not none %} {{ entry.before_consistency | pct }}{% endif %}
+      </span>
+      {% endif %}
+      <span class="small">&#8594; after</span>
+      {% if entry.after_pass is none %}
+      <span class="badge neutral">&mdash;</span>
+      {% else %}
+      <span class="badge {{ 'pass' if entry.after_pass else 'fail' }}">
+        {{ 'PASS' if entry.after_pass else 'FAIL' }}{% if entry.after_consistency is not none %} {{ entry.after_consistency | pct }}{% endif %}
+      </span>
+      {% endif %}
+    </div>
+  </div>
+</div>
+{% endmacro %}
+{% block content %}
+<h1>TrainForge Regression Report</h1>
+<div class="meta">
+  Before: <code>{{ diff.before_path or '(before)' }}</code> &middot;
+  After: <code>{{ diff.after_path or '(after)' }}</code>
+</div>
+
+<h2>Summary</h2>
+<div class="grid">
+  <div class="card"><div class="label">Regressed</div><div class="value">{{ diff.newly_failing | length }}</div></div>
+  <div class="card"><div class="label">Fixed</div><div class="value">{{ diff.newly_passing | length }}</div></div>
+  <div class="card"><div class="label">Still passing</div><div class="value">{{ diff.still_passing | length }}</div></div>
+  <div class="card"><div class="label">Still failing</div><div class="value">{{ diff.still_failing | length }}</div></div>
+  <div class="card"><div class="label">Consistency changed</div><div class="value">{{ diff.consistency_changed | length }}</div></div>
+  {% if diff.only_in_before %}
+  <div class="card"><div class="label">Removed</div><div class="value">{{ diff.only_in_before | length }}</div></div>
+  {% endif %}
+  {% if diff.only_in_after %}
+  <div class="card"><div class="label">Added</div><div class="value">{{ diff.only_in_after | length }}</div></div>
+  {% endif %}
+</div>
+
+<h2>Regressions ({{ diff.newly_failing | length }})</h2>
+{% if diff.newly_failing %}
+<div class="scenario">
+  {% for e in diff.newly_failing %}{{ bucket_row(e) }}{% endfor %}
+</div>
+{% else %}
+<div class="empty">None.</div>
+{% endif %}
+
+<h2>Newly fixed ({{ diff.newly_passing | length }})</h2>
+{% if diff.newly_passing %}
+<div class="scenario">
+  {% for e in diff.newly_passing %}{{ bucket_row(e) }}{% endfor %}
+</div>
+{% else %}
+<div class="empty">None.</div>
+{% endif %}
+
+<h2>Consistency changed ({{ diff.consistency_changed | length }})</h2>
+{% if diff.consistency_changed %}
+<div class="scenario">
+  {% for e in diff.consistency_changed %}{{ bucket_row(e) }}{% endfor %}
+</div>
+{% else %}
+<div class="empty">None.</div>
+{% endif %}
+
+{% if diff.only_in_before or diff.only_in_after %}
+<h2>Scope changes</h2>
+<div class="scenario">
+  {% if diff.only_in_before %}<h3>Removed after the change</h3>
+  {% for e in diff.only_in_before %}{{ bucket_row(e) }}{% endfor %}{% endif %}
+  {% if diff.only_in_after %}<h3>Added after the change</h3>
+  {% for e in diff.only_in_after %}{{ bucket_row(e) }}{% endfor %}{% endif %}
+</div>
+{% endif %}
+
+<h2>Unchanged</h2>
+<div class="scenario">
+  <div class="divergence-entry">
+    <div class="small">{{ diff.still_passing | length }} scenarios still passing, {{ diff.still_failing | length }} still failing.</div>
+  </div>
+</div>
+{% endblock %}

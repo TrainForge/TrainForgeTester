@@ -1,0 +1,232 @@
+{% extends "_base.html.j2" %}
+{% set title = "TrainForge Report" %}
+{% block content %}
+<h1>TrainForge Report</h1>
+<div class="meta">
+  Agent: <code>{{ config.agent_url }}</code> &middot;
+  Evaluator: <code>{{ config.llm_model }}</code> &middot;
+  Runs per scenario: {{ config.runs }} &middot;
+  Timeout: {{ config.timeout_seconds }}s
+</div>
+
+<h2>Summary</h2>
+<div class="grid">
+  <div class="card"><div class="label">Scenarios</div><div class="value">{{ summary.total_scenarios }}</div></div>
+  <div class="card"><div class="label">Pass rate</div><div class="value">{{ summary.pass_rate | pct }}</div></div>
+  <div class="card"><div class="label">Passed</div><div class="value">{{ summary.passed }}</div></div>
+  <div class="card"><div class="label">Partial</div><div class="value">{{ summary.partial }}</div></div>
+  <div class="card"><div class="label">Failed</div><div class="value">{{ summary.failed }}</div></div>
+  {% if summary.unreachable %}
+  <div class="card"><div class="label">Unreachable</div><div class="value">{{ summary.unreachable }}</div></div>
+  {% endif %}
+  {% if config.runs > 1 %}
+  <div class="card"><div class="label">Overall consistency</div><div class="value">{{ summary.overall_consistency | pct }}</div></div>
+  <div class="card"><div class="label">Inconsistent</div><div class="value">{{ summary.inconsistent }}</div></div>
+  {% endif %}
+  <div class="card"><div class="label">Unexpected divergences</div><div class="value">{{ summary.unexpected_divergences }}</div></div>
+  <div class="card"><div class="label">Expected divergences</div><div class="value">{{ summary.expected_divergences }}</div></div>
+  {% if summary.tool_call_failures %}
+  <div class="card"><div class="label">Tool call failures</div><div class="value">{{ summary.tool_call_failures }}</div></div>
+  {% endif %}
+</div>
+
+<h2>Scenarios</h2>
+{% for sc in scenarios %}
+  {% set first_run = sc.runs[0] if sc.runs else None %}
+  {% set overall_status = 'pass' if sc.runs and (sc.runs | selectattr('status', 'equalto', 'pass') | list) else ('partial_pass' if sc.runs and (sc.runs | selectattr('status', 'equalto', 'partial_pass') | list) else ('agent_unreachable' if sc.runs and sc.runs[0].status == 'agent_unreachable' else 'fail')) %}
+<div class="scenario">
+  <div class="scenario-head">
+    <div>
+      <h3 style="margin:0">{{ sc.name }}</h3>
+      <div class="small">id: {{ sc.scenario_id }}</div>
+    </div>
+    <div>
+      <span class="badge {{ overall_status | replace('partial_pass', 'partial') | replace('agent_unreachable', 'fail') }}">{{ overall_status | status_label }}</span>
+      {% if config.runs > 1 %}
+        <span class="badge {{ 'fail' if sc.inconsistent else 'accent' }}">
+          Consistency {{ sc.consistency | pct }}{% if sc.inconsistent %} (INCONSISTENT){% endif %}
+        </span>
+      {% endif %}
+    </div>
+  </div>
+  {% if sc.tags %}
+  <div class="tags" style="margin-top:6px">
+    {% for tag in sc.tags %}<span class="tag">{{ tag }}</span>{% endfor %}
+  </div>
+  {% endif %}
+  {% if sc.description %}
+  <div class="small" style="margin-top:6px">{{ sc.description }}</div>
+  {% endif %}
+
+  {% for run in sc.runs %}
+  <details {% if loop.first %}open{% endif %}>
+    <summary>
+      Run {{ run.run_index + 1 }} / {{ sc.runs | length }} &mdash;
+      <span class="badge {{ run.status | replace('partial_pass', 'partial') | replace('agent_unreachable', 'fail') }}">{{ run.status | status_label }}</span>
+    </summary>
+    {% if run.error %}
+    <div class="small" style="color: var(--fail); margin-top:6px">Error: {{ run.error }}</div>
+    {% endif %}
+    {% for turn in run.turns %}
+      <div class="turn customer">
+        <div class="role">Customer</div>
+        <div class="text">{{ turn.customer_message }}</div>
+      </div>
+      {% set has_tool_failure = turn.tool_calls | rejectattr('status', 'equalto', 'pass') | list %}
+      {% set failing = turn.status != 'evaluated' or has_tool_failure or (not turn.may_diverge and (turn.checks | rejectattr('passed') | list)) %}
+      {% if turn.tool_calls %}
+        {% set loop_groups = {} %}
+        {% for tc in turn.tool_calls %}
+          {% if loop_groups.update({tc.loop_index: loop_groups.get(tc.loop_index, []) + [tc]}) %}{% endif %}
+        {% endfor %}
+        {% for loop_idx, calls in loop_groups.items() %}
+          {% set loop_fail = calls | rejectattr('status', 'equalto', 'pass') | list %}
+          <div class="tool-loop {% if loop_fail %}has-failure{% endif %}">
+            <div class="role">Tool loop {{ loop_idx }}{% if loop_fail %} &middot; {{ loop_fail | length }} failing{% endif %}</div>
+            {% for tc in calls %}
+              <div class="tool-row">
+                <span><span class="badge {{ 'pass' if tc.status == 'pass' else 'fail' }}">{{ tc.status }}</span></span>
+                <span>
+                  <div class="label">Expected</div>
+                  <code>{{ tc.expected_name or '-' }}</code>
+                  {% if tc.expected_arguments_schema %}
+                    <div class="small">schema: {{ tc.expected_arguments_schema | plain | tojson }}</div>
+                  {% endif %}
+                </span>
+                <span>
+                  <div class="label">Actual</div>
+                  <code>{{ tc.actual_name or '(none)' }}</code>
+                  {% if tc.actual_arguments %}<div class="small">args: {{ tc.actual_arguments | tojson }}</div>{% endif %}
+                </span>
+              </div>
+              {% if tc.explanation %}
+              <div class="small" style="padding-left: 112px;">{{ tc.explanation }}</div>
+              {% endif %}
+            {% endfor %}
+          </div>
+        {% endfor %}
+      {% endif %}
+      <div class="turn agent {% if turn.diverged %}diverged{% endif %} {% if failing %}failing{% endif %}">
+        <div class="role">Agent (turn {{ turn.turn_index }}){% if turn.may_diverge %} &middot; may_diverge{% endif %}</div>
+        <div class="kv">
+          <span class="k">Golden</span><span class="text">{{ turn.golden_response }}</span>
+          <span class="k">Actual</span><span class="text">{{ turn.actual_response or '(empty)' }}</span>
+          {% if turn.status != 'evaluated' %}
+          <span class="k">Status</span><span><span class="badge fail">{{ turn.status | status_label }}</span></span>
+          {% endif %}
+          {% if turn.consistency_score is not none %}
+          <span class="k">Consistency</span><span>{{ turn.consistency_score }} / 5{% if turn.divergence_type and turn.divergence_type != 'none' %} &middot; <span class="small">{{ turn.divergence_type }}</span>{% endif %}</span>
+          {% endif %}
+          {% if turn.divergence_note %}
+          <span class="k">Note</span><span class="small">{{ turn.divergence_note }}</span>
+          {% endif %}
+        </div>
+        {% if turn.checks %}
+        <ul class="checks">
+          {% for c in turn.checks %}
+          <li class="{{ 'pass' if c.passed else 'fail' }}">{{ c.check }}{% if c.explanation %} &mdash; <span class="small">{{ c.explanation }}</span>{% endif %}</li>
+          {% endfor %}
+        </ul>
+        {% endif %}
+      </div>
+    {% endfor %}
+
+    <div class="turn">
+      <div class="role">Outcome</div>
+      {% if run.outcome.status != 'evaluated' %}
+      <div><span class="badge fail">{{ run.outcome.status | status_label }}</span>{% if run.outcome.error %} <span class="small">{{ run.outcome.error }}</span>{% endif %}</div>
+      {% endif %}
+      {% if run.outcome.checks %}
+      <ul class="checks">
+        {% for c in run.outcome.checks %}
+        <li class="{{ 'pass' if c.passed else 'fail' }}">{{ c.check }}{% if c.explanation %} &mdash; <span class="small">{{ c.explanation }}</span>{% endif %}</li>
+        {% endfor %}
+      </ul>
+      {% else %}
+      <div class="empty">No outcome checks.</div>
+      {% endif %}
+    </div>
+  </details>
+  {% endfor %}
+</div>
+{% else %}
+<div class="empty">No scenarios.</div>
+{% endfor %}
+
+<h2>Divergence Summary</h2>
+<h3>Unexpected ({{ unexpected_divergences | length }})</h3>
+{% if unexpected_divergences %}
+<div class="scenario">
+  {% for d in unexpected_divergences %}
+  <div class="divergence-entry">
+    <div><strong>{{ d.scenario_name }}</strong> <span class="small">turn {{ d.turn_index }} run {{ d.run_index + 1 }}</span>
+      <span class="badge fail">{{ d.divergence_type }}</span>
+    </div>
+    <div class="kv">
+      <span class="k">Golden</span><span class="text">{{ d.golden }}</span>
+      <span class="k">Actual</span><span class="text">{{ d.actual }}</span>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% else %}
+<div class="empty">None.</div>
+{% endif %}
+
+<h3>Expected ({{ expected_divergences | length }})</h3>
+{% if expected_divergences %}
+<div class="scenario">
+  {% for d in expected_divergences %}
+  <div class="divergence-entry">
+    <div><strong>{{ d.scenario_name }}</strong> <span class="small">turn {{ d.turn_index }} run {{ d.run_index + 1 }}</span>
+      <span class="badge accent">{{ d.divergence_type }}</span>
+    </div>
+    <div class="kv">
+      <span class="k">Golden</span><span class="text">{{ d.golden }}</span>
+      <span class="k">Actual</span><span class="text">{{ d.actual }}</span>
+      {% if d.note %}<span class="k">Note</span><span class="small">{{ d.note }}</span>{% endif %}
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% else %}
+<div class="empty">None.</div>
+{% endif %}
+
+<h2>Failure Analysis ({{ failures | length }})</h2>
+{% if failures %}
+{% for f in failures %}
+<div class="scenario">
+  <div class="scenario-head">
+    <strong>{{ f.scenario_name }}</strong>
+    <span class="badge {{ f.status | replace('partial_pass', 'partial') | replace('agent_unreachable', 'fail') }}">{{ f.status | status_label }} (run {{ f.run_index + 1 }})</span>
+  </div>
+  {% if f.error %}<div class="small" style="color:var(--fail)">{{ f.error }}</div>{% endif %}
+  {% if f.first_failing %}
+  <h3>First failing turn</h3>
+  <div class="kv">
+    <span class="k">Turn</span><span>{{ f.first_failing.turn_index }}</span>
+    <span class="k">Golden</span><span class="text">{{ f.first_failing.golden_response }}</span>
+    <span class="k">Actual</span><span class="text">{{ f.first_failing.actual_response or '(empty)' }}</span>
+  </div>
+  <ul class="checks">
+    {% for c in f.first_failing.checks %}
+    <li class="{{ 'pass' if c.passed else 'fail' }}">{{ c.check }}{% if c.explanation %} &mdash; <span class="small">{{ c.explanation }}</span>{% endif %}</li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+  {% if f.outcome_failures %}
+  <h3>Failed outcome checks</h3>
+  <ul class="checks">
+    {% for c in f.outcome_failures %}
+    <li class="fail">{{ c.check }}{% if c.explanation %} &mdash; <span class="small">{{ c.explanation }}</span>{% endif %}</li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+</div>
+{% endfor %}
+{% else %}
+<div class="empty">No failures.</div>
+{% endif %}
+
+{% endblock %}
