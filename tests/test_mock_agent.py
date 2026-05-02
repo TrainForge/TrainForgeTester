@@ -176,3 +176,54 @@ def test_golden_mock_emits_final_text_after_all_tools(tools_server) -> None:
     body = resp.json()
     assert body.get("response")
     assert not body.get("tool_calls")
+
+
+def test_unknown_path_returns_404(golden_server) -> None:
+    resp = requests.post(
+        golden_server.url.replace("/chat", "/unknown"),
+        json={"messages": [{"role": "user", "content": "x"}]},
+        timeout=5.0,
+    )
+    assert resp.status_code == 404
+
+
+def test_missing_messages_returns_400(golden_server) -> None:
+    resp = requests.post(golden_server.url, json={}, timeout=5.0)
+    assert resp.status_code == 400
+
+
+def test_messages_without_user_returns_400(golden_server) -> None:
+    resp = requests.post(
+        golden_server.url,
+        json={"messages": [{"role": "agent", "content": "hello"}]},
+        timeout=5.0,
+    )
+    assert resp.status_code == 400
+
+
+def test_error_mode_timeout_branch_returns_after_sleep_patch(
+    small_scenarios_path: Path, small_scenarios, monkeypatch
+) -> None:
+    from trainforge import mock_agent as mock_mod
+
+    monkeypatch.setattr(mock_mod.time, "sleep", lambda _: None)
+
+    server = MockAgentServer(
+        str(small_scenarios_path),
+        port=_free_port(),
+        mode="error",
+        error_rate=0.0,
+        timeout_rate=1.0,
+        seed=0,
+    )
+    server.start()
+    try:
+        first_user = small_scenarios["scenarios"][0]["turns"][0]["message"]
+        resp = requests.post(
+            server.url,
+            json={"messages": [{"role": "user", "content": first_user}]},
+            timeout=5.0,
+        )
+        assert resp.status_code == 200
+    finally:
+        server.stop()

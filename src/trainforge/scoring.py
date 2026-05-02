@@ -27,31 +27,40 @@ from __future__ import annotations
 
 from trainforge.schema import (
     OutcomeResult,
+    OutcomeStatus,
     ScenarioResult,
     ScenarioRunResult,
     ScenarioStatus,
+    ToolCallStatus,
     TurnResult,
+    TurnStatus,
 )
 
 
 INCONSISTENCY_THRESHOLD = 0.80
+_TERMINAL_TURN_FAILURES = {
+    TurnStatus.AGENT_ERROR,
+    TurnStatus.AGENT_TIMEOUT,
+    TurnStatus.EVAL_ERROR,
+    TurnStatus.EMPTY_RESPONSE,
+}
 
 
 def classify_scenario_run(
     turn_results: list[TurnResult], outcome: OutcomeResult
 ) -> ScenarioStatus:
     """Map one run's turn + outcome results to a :data:`ScenarioStatus`."""
-    if outcome.status == "agent_unreachable":
-        return "agent_unreachable"
+    if outcome.status == OutcomeStatus.AGENT_UNREACHABLE:
+        return ScenarioStatus.AGENT_UNREACHABLE
 
-    outcome_ok = outcome.status == "evaluated" and all(c.passed for c in outcome.checks)
+    outcome_ok = outcome.status == OutcomeStatus.EVALUATED and all(c.passed for c in outcome.checks)
     turns_clean = all(_turn_is_clean(t) for t in turn_results)
 
     if outcome_ok and turns_clean:
-        return "pass"
+        return ScenarioStatus.PASS
     if outcome_ok and not turns_clean:
-        return "partial_pass"
-    return "fail"
+        return ScenarioStatus.PARTIAL_PASS
+    return ScenarioStatus.FAIL
 
 
 def aggregate_consistency(runs: list[ScenarioRunResult]) -> tuple[float, bool]:
@@ -62,7 +71,7 @@ def aggregate_consistency(runs: list[ScenarioRunResult]) -> tuple[float, bool]:
     """
     if not runs:
         return 0.0, False
-    passed = sum(1 for r in runs if r.status == "pass")
+    passed = sum(1 for r in runs if r.status == ScenarioStatus.PASS)
     rate = passed / len(runs)
     inconsistent = len(runs) > 1 and rate < INCONSISTENCY_THRESHOLD
     return rate, inconsistent
@@ -85,11 +94,11 @@ def summarize(scenarios: list[ScenarioResult]) -> dict[str, int | float]:
     for sc in scenarios:
         pass_rates.append(sc.consistency)
         statuses = [r.status for r in sc.runs]
-        if all(s == "agent_unreachable" for s in statuses):
+        if all(s == ScenarioStatus.AGENT_UNREACHABLE for s in statuses):
             unreachable += 1
-        elif any(s == "pass" for s in statuses):
+        elif any(s == ScenarioStatus.PASS for s in statuses):
             passed += 1
-        elif any(s == "partial_pass" for s in statuses):
+        elif any(s == ScenarioStatus.PARTIAL_PASS for s in statuses):
             partial += 1
         else:
             failed += 1
@@ -99,7 +108,7 @@ def summarize(scenarios: list[ScenarioResult]) -> dict[str, int | float]:
         for run in sc.runs:
             for turn in run.turns:
                 for tc in turn.tool_calls:
-                    if tc.status != "pass":
+                    if tc.status != ToolCallStatus.PASS:
                         tool_failures += 1
                 if turn.exact_match is False:
                     exact_match_failures += 1
@@ -145,10 +154,10 @@ def _turn_is_clean(turn: TurnResult) -> bool:
     - On may_diverge=True turns: any standard_check_results entry not passed.
     - Any custom check entry not passed (regardless of may_diverge).
     """
-    if turn.status in {"agent_error", "agent_timeout", "eval_error", "empty_response"}:
+    if turn.status in _TERMINAL_TURN_FAILURES:
         return False
     for record in turn.tool_calls:
-        if record.status != "pass":
+        if record.status != ToolCallStatus.PASS:
             return False
     if turn.may_diverge:
         for sr in turn.standard_check_results:

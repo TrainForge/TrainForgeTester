@@ -49,6 +49,7 @@ from trainforge.evaluation import (
 from trainforge.llm.base import LLMClient
 from trainforge.schema import (
     AgentTurn,
+    ArgumentType,
     CheckResult,
     ExpectedTool,
     OutcomeResult,
@@ -63,8 +64,8 @@ from trainforge.schema import (
     ToolCallStatus,
     ToolLoop,
     TurnResult,
+    TurnStatus,
     UserTurn,
-    TurnStatus, ArgumentType,
 )
 from trainforge.scoring import aggregate_consistency, classify_scenario_run
 from trainforge.standard_checks import STANDARD_CHECKS
@@ -78,6 +79,17 @@ MAX_TOOL_ROUNDS_PER_LOOP = 8
 instead of converging on the expected set. If a loop takes more than this
 many HTTP rounds, remaining expected tools are marked ``missing`` and the
 runner moves on."""
+
+_AGENT_UNREACHABLE_ERROR = "agent_unreachable"
+_EVAL_ERROR = "eval_error"
+_EMPTY_RESPONSE_EXPLANATION = "agent returned empty text response"
+_DEFAULT_ARGUMENTS_BY_TYPE: dict[ArgumentType, object] = {
+    ArgumentType.STRING: "",
+    ArgumentType.INTEGER: 0,
+    ArgumentType.NUMBER: 0.0,
+    ArgumentType.BOOLEAN: False,
+    ArgumentType.ANY: "",
+}
 
 
 @dataclass
@@ -167,7 +179,7 @@ class ScenarioRunner:
             )
             pending_user = None
 
-            if turn_result.error == "agent_unreachable":
+            if turn_result.error == _AGENT_UNREACHABLE_ERROR:
                 return _unreachable_run(run_index, turn_results, turn_result.error)
 
         outcome = self._evaluate_outcome(scenario, actual_history)
@@ -240,7 +252,7 @@ class ScenarioRunner:
             log.error("agent unreachable: %s", exc)
             actual_history.append({"role": Role.AGENT, "content": ""})
             tr = base.to_error_result(TurnStatus.AGENT_ERROR, str(exc))
-            return TurnResult(**{**tr.model_dump(), "error": "agent_unreachable"})
+            return TurnResult(**{**tr.model_dump(), "error": _AGENT_UNREACHABLE_ERROR})
 
         actual_text = reply.text or ""
         actual_history.append({"role": Role.AGENT, "content": actual_text})
@@ -248,7 +260,7 @@ class ScenarioRunner:
         if not actual_text.strip():
             # Empty agent response: every check fails by definition.
             failed_customs = [
-                CheckResult(check=c, passed=False, explanation="agent returned empty text response")
+                CheckResult(check=c, passed=False, explanation=_EMPTY_RESPONSE_EXPLANATION)
                 for c in agent_turn.checks
             ]
             return TurnResult(
@@ -317,7 +329,7 @@ class ScenarioRunner:
             may_diverge=False,
             divergence_note=base.divergence_note,
             tool_calls=base.tool_calls,
-            status="evaluated",
+            status=TurnStatus.EVALUATED,
             exact_match=passed,
             standard_check_results=[],
             checks=custom_results,
@@ -343,7 +355,7 @@ class ScenarioRunner:
         except EvaluationError as exc:
             log.warning("custom-check eval error: %s", exc)
             return [
-                CheckResult(check=c, passed=False, explanation="eval_error")
+                CheckResult(check=c, passed=False, explanation=_EVAL_ERROR)
                 for c in agent_turn.checks
             ]
         return [
@@ -391,12 +403,12 @@ class ScenarioRunner:
                     id=c.id,
                     question=c.question,
                     passed=False,
-                    explanation="eval_error",
+                    explanation=_EVAL_ERROR,
                 )
                 for c in STANDARD_CHECKS
             ]
             custom_fail = [
-                CheckResult(check=c, passed=False, explanation="eval_error")
+                CheckResult(check=c, passed=False, explanation=_EVAL_ERROR)
                 for c in agent_turn.checks
             ]
             return TurnResult(
@@ -580,7 +592,7 @@ class ScenarioRunner:
             return OutcomeResult(
                 status=OutcomeStatus.EVAL_ERROR,
                 checks=[
-                    CheckResult(check=c, passed=False, explanation="eval_error")
+                    CheckResult(check=c, passed=False, explanation=_EVAL_ERROR)
                     for c in scenario.outcome_checks
                 ],
                 error=str(exc),
@@ -652,11 +664,16 @@ def _tool_abort_turn_result(
         divergence_note=agent_turn.divergence_note,
         tool_calls=tool_records,
     )
-    status = TurnStatus.AGENT_ERROR if is_unreachable else abort.status
-    tr = base.to_error_result(status, abort.message)
+    tr = base.to_error_result(_as_turn_status(abort.status), abort.message)
     if is_unreachable:
-        return TurnResult(**{**tr.model_dump(), "error": "agent_unreachable"})
+        return TurnResult(**{**tr.model_dump(), "error": _AGENT_UNREACHABLE_ERROR})
     return tr
+
+
+def _as_turn_status(status: TurnStatus | OutcomeStatus) -> TurnStatus:
+    if isinstance(status, TurnStatus):
+        return status
+    return TurnStatus.AGENT_ERROR
 
 
 def _unreachable_run(
@@ -702,15 +719,11 @@ def _default_arguments(schema: dict[str, ToolArgumentSchema]) -> dict:
 
 
 def _default_for(t: ArgumentType) -> object:
-    return {
-        ArgumentType.STRING: "",
-        ArgumentType.INTEGER: 0,
-        ArgumentType.NUMBER: 0.0,
-        ArgumentType.BOOLEAN: False,
-        ArgumentType.ARRAY: [],
-        ArgumentType.OBJECT: {},
-        ArgumentType.ANY: "",
-    }.get(t, "")
+    if t == ArgumentType.ARRAY:
+        return []
+    if t == ArgumentType.OBJECT:
+        return {}
+    return _DEFAULT_ARGUMENTS_BY_TYPE.get(t, "")
 
 
 def _decision_to_record(
