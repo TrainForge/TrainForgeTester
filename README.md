@@ -32,6 +32,11 @@ Most "LLM-as-judge" frameworks ask the model to score quality on a 0-1 scale. Th
 
 Every LLM-judged claim in the system is a yes/no question with a stable id. No 0-1 scores, no judge "reasoning" appears in the verdict — only `1` or `0` plus a brief reason for failures.
 
+## Documentation
+
+- Getting started: [`GETTING_STARTED.md`](GETTING_STARTED.md)
+- Contributing guide: [`CONTRIBUTING.md`](CONTRIBUTING.md)
+
 ## Install
 
 Requires Python ≥ 3.10.

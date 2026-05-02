@@ -205,3 +205,57 @@ def test_legacy_customer_role_is_accepted_and_normalized() -> None:
     parsed = parse_scenarios(raw)
     assert parsed.scenarios[0].turns[0].role == "user"
 
+
+def test_scenario_with_empty_turns_is_rejected() -> None:
+    raw = {
+        "version": "2.0",
+        "scenarios": [
+            {
+                "id": "bad-empty",
+                "name": "bad-empty",
+                "turns": [],
+                "expected_outcome": "x",
+            }
+        ],
+    }
+    with pytest.raises(MalformedScenarioError):
+        parse_scenarios(raw)
+
+
+def test_scenarios_file_model_validator_rejects_wrong_version() -> None:
+    from pydantic import ValidationError
+
+    from trainforge.schema import ScenariosFile
+
+    with pytest.raises(ValidationError):
+        ScenariosFile.model_validate({"version": "1.0", "scenarios": []})
+
+
+def test_run_results_model_validator_rejects_wrong_version() -> None:
+    from pydantic import ValidationError
+
+    from trainforge.schema import RunResults
+
+    with pytest.raises(ValidationError):
+        RunResults.model_validate(
+            {
+                "version": "1.0",
+                "config": {
+                    "agent_url": "http://example",
+                    "llm_model": "m",
+                    "runs": 1,
+                    "timeout_seconds": 1.0,
+                },
+                "summary": {
+                    "total_scenarios": 0,
+                    "passed": 0,
+                    "partial": 0,
+                    "failed": 0,
+                    "unreachable": 0,
+                    "inconsistent": 0,
+                    "pass_rate": 0.0,
+                    "overall_consistency": 0.0,
+                },
+                "scenarios": [],
+            }
+        )

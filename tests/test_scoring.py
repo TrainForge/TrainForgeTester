@@ -172,6 +172,12 @@ def test_consistent_at_threshold() -> None:
     assert inconsistent is False
 
 
+def test_aggregate_consistency_empty_runs() -> None:
+    rate, inconsistent = aggregate_consistency([])
+    assert rate == 0.0
+    assert inconsistent is False
+
+
 # ---------------------------------------------------------------------------
 # summarize
 # ---------------------------------------------------------------------------
@@ -206,3 +212,23 @@ def test_summarize_counts_failures_by_category() -> None:
     assert summary["custom_check_failures"] == 1
     assert summary["total_scenarios"] == 1
     assert summary["partial"] == 1
+
+
+def test_summarize_counts_unreachable_and_inconsistent() -> None:
+    run = ScenarioRunResult(
+        run_index=0,
+        status="agent_unreachable",
+        turns=[],
+        outcome=OutcomeResult(status="agent_unreachable", checks=[]),
+    )
+    sc = ScenarioResult(
+        scenario_id="u1",
+        name="u1",
+        runs=[run],
+        consistency=0.0,
+        inconsistent=True,
+    )
+    summary = summarize([sc])
+    assert summary["unreachable"] == 1
+    assert summary["inconsistent"] == 1
+

@@ -141,3 +141,87 @@ def test_sends_full_history() -> None:
     call = responses.calls[0]
     body = _json.loads(call.request.body)
     assert body == {"messages": history}
+
+
+@responses.activate
+def test_agent_reply_is_empty_property() -> None:
+    responses.post(AGENT_URL, json={"response": "   "}, status=200)
+    reply = AgentClient(url=AGENT_URL).chat([_user("hello")])
+    assert reply.is_empty is True
+
+
+@responses.activate
+def test_timeout_then_connection_error_is_unreachable() -> None:
+    responses.post(AGENT_URL, body=requests.exceptions.Timeout("slow"))
+    responses.post(AGENT_URL, body=requests.exceptions.ConnectionError("boom"))
+    with pytest.raises(AgentUnreachableError):
+        AgentClient(url=AGENT_URL, timeout_seconds=0.1).chat([_user("hi")])
+
+
+@responses.activate
+def test_timeout_then_request_exception_is_unreachable() -> None:
+    responses.post(AGENT_URL, body=requests.exceptions.Timeout("slow"))
+    responses.post(AGENT_URL, body=requests.exceptions.RequestException("boom"))
+    with pytest.raises(AgentUnreachableError):
+        AgentClient(url=AGENT_URL, timeout_seconds=0.1).chat([_user("hi")])
+
+
+@responses.activate
+def test_response_must_be_object() -> None:
+    responses.post(AGENT_URL, json=["not", "an", "object"], status=200)
+    with pytest.raises(AgentError):
+        AgentClient(url=AGENT_URL).chat([_user("hi")])
+
+
+@responses.activate
+def test_response_field_must_be_string() -> None:
+    responses.post(AGENT_URL, json={"response": 123}, status=200)
+    with pytest.raises(AgentError):
+        AgentClient(url=AGENT_URL).chat([_user("hi")])
+
+
+@responses.activate
+def test_tool_call_item_must_be_object() -> None:
+    responses.post(AGENT_URL, json={"tool_calls": ["oops"]}, status=200)
+    with pytest.raises(AgentError):
+        AgentClient(url=AGENT_URL).chat([_user("hi")])
+
+
+@responses.activate
+def test_tool_call_arguments_must_be_object() -> None:
+    responses.post(
+        AGENT_URL,
+        json={"tool_calls": [{"name": "t", "arguments": "nope"}]},
+        status=200,
+    )
+    with pytest.raises(AgentError):
+        AgentClient(url=AGENT_URL).chat([_user("hi")])
+
+
+@responses.activate
+def test_tool_call_id_must_be_string_if_present() -> None:
+    responses.post(
+        AGENT_URL,
+        json={"tool_calls": [{"id": 42, "name": "t", "arguments": {}}]},
+        status=200,
+    )
+    with pytest.raises(AgentError):
+        AgentClient(url=AGENT_URL).chat([_user("hi")])
+
+
+@responses.activate
+def test_tool_call_arguments_none_defaults_to_empty_dict() -> None:
+    responses.post(
+        AGENT_URL,
+        json={"tool_calls": [{"name": "t", "arguments": None}]},
+        status=200,
+    )
+    reply = AgentClient(url=AGENT_URL).chat([_user("hi")])
+    assert reply.tool_calls[0].arguments == {}
+
+
+@responses.activate
+def test_request_exception_raises_unreachable() -> None:
+    responses.post(AGENT_URL, body=requests.exceptions.RequestException("bad request"))
+    with pytest.raises(AgentUnreachableError):
+        AgentClient(url=AGENT_URL).chat([_user("hi")])

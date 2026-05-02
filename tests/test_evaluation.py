@@ -99,6 +99,18 @@ def test_turn_eval_accepts_true_false_too(fake_llm) -> None:
     assert [c.passed for c in result.checks] == [True, False]
 
 
+def test_turn_eval_accepts_string_binary_tokens(fake_llm) -> None:
+    fake_llm.queue_raw(_compact(["yes", "0"]))
+    result = evaluate_turn(
+        fake_llm,
+        golden_response="g",
+        actual_response="a",
+        user_message="hi",
+        questions=["q1", "q2"],
+    )
+    assert [c.passed for c in result.checks] == [True, False]
+
+
 def test_turn_eval_rejects_wrong_length(fake_llm) -> None:
     fake_llm.queue_raw(_compact([1, 0]))
     fake_llm.queue_raw(_compact([1, 0]))  # strict retry returns same wrong shape
@@ -123,6 +135,45 @@ def test_turn_eval_rejects_non_binary_value(fake_llm) -> None:
             user_message="hi",
             questions=["q1", "q2"],
         )
+
+
+def test_turn_eval_missing_r_list_raises(fake_llm) -> None:
+    fake_llm.queue_raw(json.dumps({"f": {}}))
+    fake_llm.queue_raw(json.dumps({"f": {}}))
+    with pytest.raises(EvaluationError):
+        evaluate_turn(
+            fake_llm,
+            golden_response="g",
+            actual_response="a",
+            user_message="hi",
+            questions=["q1"],
+        )
+
+
+def test_turn_eval_non_object_failures_map_raises(fake_llm) -> None:
+    fake_llm.queue_raw(json.dumps({"r": [0], "f": ["oops"]}))
+    fake_llm.queue_raw(json.dumps({"r": [0], "f": ["oops"]}))
+    with pytest.raises(EvaluationError):
+        evaluate_turn(
+            fake_llm,
+            golden_response="g",
+            actual_response="a",
+            user_message="hi",
+            questions=["q1"],
+        )
+
+
+def test_turn_eval_failed_item_without_reason_is_empty_string(fake_llm) -> None:
+    fake_llm.queue_raw(json.dumps({"r": [0], "f": {}}))
+    result = evaluate_turn(
+        fake_llm,
+        golden_response="g",
+        actual_response="a",
+        user_message="hi",
+        questions=["q1"],
+    )
+    assert result.checks[0].passed is False
+    assert result.checks[0].explanation == ""
 
 
 def test_turn_eval_retries_once_then_succeeds(fake_llm) -> None:
@@ -182,3 +233,40 @@ def test_outcome_eval_happy_path(fake_llm) -> None:
     )
     assert [c.passed for c in result.checks] == [True, False]
     assert result.checks[1].explanation == "not found"
+
+
+def test_outcome_eval_empty_checks_raises() -> None:
+    from trainforge.llm.prompts import build_outcome_eval_prompt
+
+    with pytest.raises(ValueError):
+        build_outcome_eval_prompt(
+            conversation=[{"role": "user", "content": "x"}],
+            expected_outcome="ok",
+            outcome_checks=[],
+        )
+
+
+def test_turn_eval_empty_response_retries_then_raises(fake_llm) -> None:
+    fake_llm.queue_raw("")
+    fake_llm.queue_raw("")
+    with pytest.raises(EvaluationError):
+        evaluate_turn(
+            fake_llm,
+            golden_response="g",
+            actual_response="a",
+            user_message="hi",
+            questions=["q1"],
+        )
+
+
+def test_turn_eval_rejects_non_binary_integer(fake_llm) -> None:
+    fake_llm.queue_raw(json.dumps({"r": [2], "f": {}}))
+    fake_llm.queue_raw(json.dumps({"r": [2], "f": {}}))
+    with pytest.raises(EvaluationError):
+        evaluate_turn(
+            fake_llm,
+            golden_response="g",
+            actual_response="a",
+            user_message="hi",
+            questions=["q1"],
+        )

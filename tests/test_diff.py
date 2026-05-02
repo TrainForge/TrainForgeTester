@@ -103,3 +103,12 @@ def test_consistency_epsilon_respected() -> None:
     # 0.05 < 0.1 -> still_passing, not consistency_changed.
     assert [e.scenario_id for e in report.still_passing] == ["a"]
     assert report.consistency_changed == []
+
+
+def test_all_entries_property_not_empty() -> None:
+    before = _results(_scenario("a", passed=True), _scenario("b", passed=False))
+    after = _results(_scenario("a", passed=False), _scenario("b", passed=True))
+    report = compute_diff(before, after)
+    ids = [e.scenario_id for e in report.all_entries]
+    assert set(ids) == {"a", "b"}
+
