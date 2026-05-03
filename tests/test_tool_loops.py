@@ -1,4 +1,4 @@
-"""Tool-loop semantics and golden-injection for tool_calls (v0.2)."""
+"""Tool-loop semantics and golden-injection for tool_calls (TrainForge 0.1)."""
 from __future__ import annotations
 
 from pathlib import Path

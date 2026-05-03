@@ -1,8 +1,8 @@
 """TrainForge: open-source conversational-agent test runner."""
 
-__version__ = "0.2.0"
+__version__ = "0.1.0"
 SCENARIO_FORMAT_VERSION = "2.0"
-"""Bumped from 1.0 in v0.2.0:
+"""Scenario format 2.0 is the first public TrainForge 0.1.0 format:
 - Role ``customer`` renamed to ``user`` (aligns with OpenAI conventions).
 - ``AgentTurn.may_diverge`` default flipped to ``False``: by default the
   runner does an exact ``==`` text match between the agent's actual reply

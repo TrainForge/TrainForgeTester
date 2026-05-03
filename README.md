@@ -349,14 +349,14 @@ Errors are mapped as follows:
 
 ## Migrating from v1.x scenarios
 
-If you have v1.x scenario JSON files, two changes are required to load under v0.2:
+If you have v1.x scenario JSON files, two changes are required to load under TrainForge 0.1:
 
 1. Bump `"version": "1.0"` to `"version": "2.0"` at the top.
 2. Rename every `"role": "customer"` to `"role": "user"`.
 
 Behavioral defaults flipped:
 
-- `may_diverge` now defaults to `false` instead of `true` (v1.x had it as a per-turn opt-in but the example scenario set it to `true` on the weather turn). Most scripted-reply scenarios will just *work* better under v0.2 — but if you depended on the LLM-evaluated behavior, set `may_diverge: true` explicitly per turn.
+- `may_diverge` now defaults to `false` instead of `true` (v1.x had it as a per-turn opt-in but the example scenario set it to `true` on the weather turn). Most scripted-reply scenarios will just *work* better under TrainForge 0.1, but if you depended on the LLM-evaluated behavior, set `may_diverge: true` explicitly per turn.
 - `consistency_score` (1-5) and `divergence_type` are gone from `results.json`. They are replaced by `exact_match: true|false|null` and `standard_check_results: [...]`. The HTML report renders the new shape.
 
 ## Developing

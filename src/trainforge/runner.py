@@ -1,6 +1,6 @@
 """Core scenario runner - the heart of TrainForge.
 
-v0.2 deterministic-first model:
+TrainForge 0.1 deterministic-first model:
 
 1. **Tool loops are checked deterministically.** Each declared
    :class:`ToolLoop` runs *before* the agent's text turn. Tool name,

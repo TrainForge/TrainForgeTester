@@ -1,4 +1,4 @@
-"""PASS / PARTIAL PASS / FAIL rules under the v0.2 deterministic-first model."""
+"""PASS / PARTIAL PASS / FAIL rules under the TrainForge 0.1 deterministic-first model."""
 from __future__ import annotations
 
 import pytest
@@ -82,7 +82,7 @@ def test_pass_when_may_diverge_and_all_standard_checks_pass() -> None:
 
 
 def test_partial_when_exact_match_fails_but_outcome_passes() -> None:
-    """v0.2 specific: an exact-match miss on a may_diverge=False turn is a
+    """TrainForge 0.1 specific: an exact-match miss on a may_diverge=False turn is a
     structural failure that prevents PASS. Outcome OK -> PARTIAL."""
     turns = [_turn(exact_match=False, custom=[("c", True)])]
     outcome = _outcome(passed=[True])

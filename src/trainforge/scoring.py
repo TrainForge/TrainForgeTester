@@ -1,4 +1,4 @@
-"""Scenario PASS / PARTIAL / FAIL classification (v0.2 deterministic-first).
+"""Scenario PASS / PARTIAL / FAIL classification (TrainForge 0.1 deterministic-first).
 
 A run PASSes when ALL of:
 
