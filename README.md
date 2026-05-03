@@ -355,4 +355,4 @@ Tests inject a stub LLM via `trainforge.cli._LLM_CLIENT_FACTORY`; the Anthropic 
 
 ## License
 
-MIT
+Apache 2.0
