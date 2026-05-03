@@ -4,7 +4,7 @@ After each agent turn, the runner replaces the agent's actual response with
 the golden response in the conversation history. The agent at turn N always
 sees the correct conversation up to turn N-1.
 
-Adapted to v0.2: the small fixture uses ``may_diverge=False`` (exact-match
+Adapted to TrainForge 0.1: the small fixture uses ``may_diverge=False`` (exact-match
 default), so the runner only calls the LLM for the per-scenario CUSTOM
 checks on each turn (each custom check list is non-empty in the fixture)
 plus the outcome eval.
@@ -35,7 +35,7 @@ class RecordingAgent:
 def _queue_small_fixture_passing_run(fake_llm) -> None:
     """Queue LLM responses for one full pass of the small fixture.
 
-    Small fixture (v0.2):
+    Small fixture (TrainForge 0.1):
     - 2 agent turns, both may_diverge=False.
     - Turn 1 has 2 custom checks -> 1 LLM call (compact, length 2)
     - Turn 2 has 1 custom check  -> 1 LLM call (compact, length 1)

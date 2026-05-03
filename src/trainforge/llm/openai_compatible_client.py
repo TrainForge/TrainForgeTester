@@ -2,7 +2,7 @@
 
 Defaults are tuned for speed on classification workloads:
 
-- ``max_tokens=1024`` - the v0.2 compact-format eval output is ~50 tokens of
+- ``max_tokens=1024`` - the TrainForge 0.1 compact-format eval output is ~50 tokens of
   visible content for a fully-passing turn (21 binary results + a tiny
   failures map). 1024 leaves comfortable headroom for reasoning models
   (e.g. GLM-4.7 on Cerebras) that consume a chunk of the budget on hidden

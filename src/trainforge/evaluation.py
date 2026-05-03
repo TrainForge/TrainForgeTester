@@ -4,7 +4,7 @@ The runner only invokes evaluators when it cannot answer deterministically:
 
 - Per-turn evaluation runs only when ``AgentTurn.may_diverge=True``.
   Otherwise the runner does Python ``==`` text equality and skips this
-  module entirely. That is the v0.2 deterministic-first contract.
+  module entirely. That is the TrainForge 0.1 deterministic-first contract.
 - Outcome evaluation runs once per scenario over the full ACTUAL transcript.
 
 Both evaluators speak the compact ``{"r": [...], "f": {...}}`` wire format

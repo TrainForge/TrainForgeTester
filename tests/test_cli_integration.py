@@ -59,7 +59,7 @@ def _count_questions(user_prompt: str) -> int:
 
 
 class _AutoPassLLM:
-    """Stub that returns 'all pass' in the v0.2 compact format.
+    """Stub that returns 'all pass' in the TrainForge 0.1 compact format.
 
     Inspects the prompt to figure out how many questions to answer, then
     returns ``{"r": [1] * n, "f": {}}``.
@@ -73,7 +73,7 @@ class _AutoPassLLM:
 
 
 class _AutoFailLLM:
-    """Stub that fails every question in the v0.2 compact format."""
+    """Stub that fails every question in the TrainForge 0.1 compact format."""
 
     model = "fake-fail"
 

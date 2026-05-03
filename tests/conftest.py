@@ -37,7 +37,7 @@ def tools_scenarios_path() -> Path:
 class FakeLLM:
     """In-memory ``LLMClient`` returning queued responses in order.
 
-    All evaluators in v0.2 speak the compact ``{"r": [...], "f": {...}}``
+    All evaluators in TrainForge 0.1 speak the compact ``{"r": [...], "f": {...}}``
     format, so test helpers center on that shape.
     """
 
