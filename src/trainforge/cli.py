@@ -194,10 +194,71 @@ def run_cmd(
             f"overall consistency: {s.overall_consistency * 100:.0f}%,"
             f" inconsistent scenarios: {s.inconsistent}"
         )
+
+    _print_failure_highlights(scenario_results)
+
     click.echo(f"wrote {output_path}")
 
     if s.failed or s.unreachable:
         sys.exit(1)
+
+
+def _print_failure_highlights(scenario_results) -> None:
+    """Surface deterministic failure messages on stdout so users see them
+    without opening the HTML report. Only runs when there is something to
+    show (tool-call failures, exact-match mismatches, custom-check fails).
+    """
+    interesting: list[str] = []
+    for sc in scenario_results:
+        for run in sc.runs:
+            for turn in run.turns:
+                for tc in turn.tool_calls:
+                    if tc.status == "pass":
+                        continue
+                    actual = tc.actual_name or "(none)"
+                    if tc.actual_arguments:
+                        actual += f"({_short_args(tc.actual_arguments)})"
+                    interesting.append(
+                        f"  ✗ {tc.status}: expected {tc.expected_name!r}, "
+                        f"agent called {actual}"
+                    )
+                if turn.exact_match is False and turn.status == "evaluated":
+                    interesting.append(
+                        f"  ✗ exact_match: turn {turn.turn_index} "
+                        f"actual reply did not match golden verbatim"
+                    )
+                for c in turn.checks:
+                    if not c.passed:
+                        interesting.append(f"  ✗ custom check failed: {c.check}")
+                for sr in turn.standard_check_results:
+                    if not sr.passed:
+                        interesting.append(
+                            f"  ✗ standard check {sr.id} failed"
+                            + (f" -- {sr.explanation}" if sr.explanation else "")
+                        )
+            for c in run.outcome.checks:
+                if not c.passed:
+                    interesting.append(f"  ✗ outcome check failed: {c.check}")
+    if interesting:
+        click.echo("")
+        click.echo("Failures:")
+        # Cap at first 12 lines so a huge run doesn't drown the terminal.
+        for line in interesting[:12]:
+            click.echo(line)
+        if len(interesting) > 12:
+            click.echo(f"  ... (+{len(interesting) - 12} more in results.json)")
+
+
+def _short_args(args: dict, max_chars: int = 60) -> str:
+    """Compact args for the terminal: ``key=value, key=value``, truncated."""
+    parts = []
+    for k, v in args.items():
+        rendered = repr(v) if isinstance(v, str) else str(v)
+        parts.append(f"{k}={rendered}")
+    s = ", ".join(parts)
+    if len(s) > max_chars:
+        s = s[: max_chars - 1] + "…"
+    return s
 
 
 # ---------------------------------------------------------------------------

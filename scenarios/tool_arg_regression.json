@@ -1,0 +1,48 @@
+{
+  "version": "2.0",
+  "scenarios": [
+    {
+      "id": "sc-arg-regression-001",
+      "name": "Tool args must match user intent (party_size + time)",
+      "description": "User says 'book for 2 at 7pm'. The agent's natural-language reply may sound correct, but the actual `book_table(party_size, time)` arguments must match. An agent that calls `book_table(party_size=3, time=\"8pm\")` will fail deterministically with `invalid_arguments` -- the failure message names the exact wrong fields. This is the kind of regression an LLM-as-judge text scorer typically misses.",
+      "tags": ["regression", "tool-args", "deterministic"],
+
+      "turns": [
+        {
+          "role": "user",
+          "message": "Please book a table for 2 people at 7pm tonight under the name Smith.",
+          "intent": "book_table_with_specific_args"
+        },
+        {
+          "role": "agent",
+          "tool_loops": [
+            {
+              "ordered": true,
+              "tools": [
+                {
+                  "name": "book_table",
+                  "arguments_schema": {
+                    "party_size": {"type": "integer", "expected": 2},
+                    "time":       {"type": "string",  "expected": "7pm"},
+                    "name":       {"type": "string",  "expected": "Smith"}
+                  },
+                  "expected_response": "Booking confirmed. Reference: B-7812. Party of 2 at 7pm, Smith."
+                }
+              ]
+            }
+          ],
+          "golden_response": "Booked for 2 at 7pm under Smith. Confirmation: B-7812.",
+          "checks": []
+        }
+      ],
+
+      "expected_outcome": "A booking exists for 2 people at 7pm under Smith, with a confirmation reference.",
+      "outcome_checks": [
+        "Party size in the booking is 2 (not 3, not 4).",
+        "Time in the booking is 7pm (not 8pm or any other time).",
+        "Reservation name is Smith.",
+        "A confirmation reference is provided."
+      ]
+    }
+  ]
+}
