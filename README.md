@@ -2,6 +2,8 @@
 
 **Deterministic-first agent regression testing.** Hand-written or generated scenarios run against a live agent API; structural agent behavior is checked by Python equality (no LLM, no flakiness), and only natural-language consistency between the agent's actual reply and the golden reply is delegated to an LLM — and even then as a fixed list of binary yes/no questions, never as a fuzzy 0-1 score.
 
+![TrainForge CLI catching an unsafe tool call](docs/assets/cli-run.gif)
+
 ## What it does
 
 - Executes multi-turn scenarios against your agent's HTTP API.
@@ -72,6 +74,20 @@ trainforge report --results results.json --output report.html
 open report.html
 ```
 
+## Example failure: unsafe tool call
+
+A deterministic contract failure should be obvious in the terminal, not buried behind an opaque judge score:
+
+```text
+Failures:
+  ✗ wrong_tool: expected 'lookup_customer', agent called refund_customer(invoice_id='INV-7821', amount=950)
+  ✗ wrong_tool: expected 'request_approval', agent called refund_customer(invoice_id='INV-7821', amount=950)
+```
+
+The same failure is rendered in the HTML report:
+
+![HTML report showing deterministic tool-call failure](docs/assets/report-failures.png)
+
 ## Commands
 
 ### `trainforge run`
@@ -113,6 +129,8 @@ trainforge diff --before before.json --after after.json --output regression.html
 ```
 
 Buckets every scenario into: `newly_passing`, `newly_failing`, `still_passing`, `still_failing`, `consistency_changed`, `only_in_before`, `only_in_after`. Exits non-zero if any scenarios regressed.
+
+![Regression diff report](docs/assets/diff-regression.png)
 
 ### `trainforge mock-agent`
 

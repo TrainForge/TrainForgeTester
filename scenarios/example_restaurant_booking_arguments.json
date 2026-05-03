@@ -1,0 +1,48 @@
+{
+  "version": "2.0",
+  "scenarios": [
+    {
+      "id": "sc-restaurant-booking-args-001",
+      "name": "Restaurant booking tool arguments match the user request",
+      "description": "Tests that a restaurant booking agent transfers the user's requested party size, time, and reservation name into the booking tool call. The user asks for a table for 2 people at 7pm under the name Smith, and the scenario verifies that the book_table tool is called with those exact structured arguments before the agent confirms the booking.",
+      "tags": ["booking", "tool-args", "restaurant"],
+
+      "turns": [
+        {
+          "role": "user",
+          "message": "Please book a table for 2 people at 7pm tonight under the name Smith.",
+          "intent": "book_table_with_specific_args"
+        },
+        {
+          "role": "agent",
+          "tool_loops": [
+            {
+              "ordered": true,
+              "tools": [
+                {
+                  "name": "book_table",
+                  "arguments_schema": {
+                    "party_size": {"type": "integer", "expected": 2},
+                    "time":       {"type": "string",  "expected": "7pm"},
+                    "name":       {"type": "string",  "expected": "Smith"}
+                  },
+                  "expected_response": "Booking confirmed. Reference: B-7812. Party of 2 at 7pm, Smith."
+                }
+              ]
+            }
+          ],
+          "golden_response": "Booked for 2 at 7pm under Smith. Confirmation: B-7812.",
+          "checks": []
+        }
+      ],
+
+      "expected_outcome": "A booking exists for 2 people at 7pm under Smith, with a confirmation reference.",
+      "outcome_checks": [
+        "Party size in the booking is 2.",
+        "Time in the booking is 7pm.",
+        "Reservation name is Smith.",
+        "A confirmation reference is provided."
+      ]
+    }
+  ]
+}
