@@ -1,0 +1,101 @@
+{
+  "version": "2.0",
+  "scenarios": [
+    {
+      "id": "sc-001",
+      "name": "Restaurant booking - evening table with weather check",
+      "description": "User books a table for 2 at 7pm. Agent checks weather and availability (unordered), recommends indoor seating, then books the corner table. The greeting and confirmation are scripted (exact match); the weather-recommendation reply may rephrase.",
+      "tags": ["booking", "weather", "seating", "tools"],
+      "turns": [
+        {
+          "role": "user",
+          "message": "Hi, I'd like to book a table for tonight",
+          "intent": "initiate_booking"
+        },
+        {
+          "role": "agent",
+          "tool_loops": [],
+          "golden_response": "Of course! How many guests will be joining and what time would you prefer?",
+          "checks": [],
+          "may_diverge": false
+        },
+        {
+          "role": "user",
+          "message": "2 people, around 7pm. How's the weather looking for outdoor seating?",
+          "intent": "provide_booking_details_and_ask_weather"
+        },
+        {
+          "role": "agent",
+          "tool_loops": [
+            {
+              "ordered": false,
+              "tools": [
+                {
+                  "name": "check_weather",
+                  "arguments_schema": {
+                    "when": {
+                      "type": "string",
+                      "expected": "tonight"
+                    }
+                  },
+                  "expected_response": "Tonight's forecast: cold and rainy, 45F, chance of showers."
+                },
+                {
+                  "name": "check_availability",
+                  "arguments_schema": {
+                    "party_size": {"type": "integer", "expected": 2},
+                    "time":       {"type": "string",  "expected": "7pm"}
+                  },
+                  "expected_response": "Available tables at 7pm for 2: corner (indoor), window (indoor), patio (outdoor)."
+                }
+              ]
+            }
+          ],
+          "golden_response": "Tonight's forecast shows cold and rainy weather. I'd recommend our indoor seating - we have some lovely window tables available.",
+          "checks": [
+            "Response mentions that the evening weather is cold or rainy.",
+            "Response recommends indoor (rather than outdoor) seating."
+          ],
+          "may_diverge": true,
+          "divergence_note": "Weather and availability come from tools; the agent may rephrase. The 20 standard NLP-consistency checks plus the two custom checks above gate on weather sentiment and indoor recommendation."
+        },
+        {
+          "role": "user",
+          "message": "OK, indoor sounds good. Can I get the corner table?",
+          "intent": "confirm_indoor_seating_request_specific_table"
+        },
+        {
+          "role": "agent",
+          "tool_loops": [
+            {
+              "ordered": true,
+              "tools": [
+                {
+                  "name": "book_table",
+                  "arguments_schema": {
+                    "party_size": {"type": "integer", "expected": 2},
+                    "time":       {"type": "string",  "expected": "7pm"},
+                    "seating":    {"type": "string",  "expected": "indoor"},
+                    "table":      {"type": "string",  "expected": "corner"}
+                  },
+                  "expected_response": "Booking confirmed. Reference: A1234."
+                }
+              ]
+            }
+          ],
+          "golden_response": "Great choice! I've booked the corner table for 2 at 7pm, indoor seating. Your confirmation number is A1234. Is there anything else I can help with?",
+          "checks": [],
+          "may_diverge": false
+        }
+      ],
+      "expected_outcome": "Booking confirmed for 2 people at 7pm, indoor seating, corner table",
+      "outcome_checks": [
+        "A booking was made (not just discussed)",
+        "Party size is 2",
+        "Time is around 7pm",
+        "Seating is indoor",
+        "Confirmation number or reference was provided"
+      ]
+    }
+  ]
+}
