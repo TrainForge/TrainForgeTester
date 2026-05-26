@@ -88,7 +88,7 @@
           "may_diverge": false
         }
       ],
-      "expected_outcome": "Booking confirmed for 2 people at 7pm, indoor seating, corner table",
+      "expected_outcome": "Booking confirmed for 2 people at 7pm, indoor seating, corner table.",
       "outcome_checks": [
         "A booking was made (not just discussed)",
         "Party size is 2",

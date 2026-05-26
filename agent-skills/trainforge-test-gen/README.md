@@ -10,8 +10,19 @@ Paste a transcript (or point at a file). The skill walks you through a few
 short questions, then writes a `scenarios/<name>.json` file you can run with:
 
 ```bash
-trainforge run --scenarios scenarios/<name>.json --agent-url <your-agent-url>
+export OPENAI_API_KEY=<your-openai-compatible-key>
+export OPENAI_API_URL=<your-openai-compatible-base-url>   # e.g. https://api.openai.com/v1
+
+trainforge run \
+  --scenarios scenarios/<name>.json \
+  --agent-url <your-agent-url> \
+  --output results.json
 ```
+
+`OPENAI_API_KEY` and `OPENAI_API_URL` are required even when every turn is
+exact-match — the runner uses them for the per-scenario outcome check.
+TrainForge supports any OpenAI-compatible endpoint (Anthropic, NVIDIA,
+Cerebras, OpenAI itself).
 
 Tool calls are checked by Python equality. Tool arguments are checked by
 literal `==` on whatever values you mark as part of the contract. Text turns

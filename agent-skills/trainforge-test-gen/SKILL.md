@@ -35,26 +35,36 @@ After every change to:
 - tool definitions (new, removed, signature-changed)
 - tool implementations the agent calls
 
-run:
+run `trainforge run` for every scenario file in `scenarios/` (the CLI takes
+one scenarios JSON file per invocation; do not pass a directory). For a
+typical layout where every scenario lives in its own file:
 
 ```
-trainforge run \
-  --scenarios scenarios/ \
-  --agent-url <user's agent URL> \
-  --output results.json
+for f in scenarios/*.json; do
+  base=$(basename "$f" .json)
+  mv "results-$base.json" "results-$base.previous.json" 2>/dev/null || true
+  trainforge run \
+    --scenarios "$f" \
+    --agent-url <user's agent URL> \
+    --output "results-$base.json"
+done
 ```
 
-If a previous `results.json` exists, follow up with:
+`trainforge run` also requires LLM access for the per-scenario outcome check
+and any `may_diverge: true` turns. Either set `OPENAI_API_KEY` and
+`OPENAI_API_URL` in the environment (the runner reads them automatically)
+or add `--llm-api-key <key> --llm-api-url <url>` to the command. The CLI
+errors with `missing LLM API key` / `missing LLM API URL` if neither is
+present, even when every turn is exact-match.
+
+If a previous results file exists for a scenario, follow up with:
 
 ```
 trainforge diff \
-  --before results.previous.json \
-  --after results.json \
-  --output regression.html
+  --before "results-$base.previous.json" \
+  --after  "results-$base.json" \
+  --output "regression-$base.html"
 ```
-
-(Rotate the previous file: `mv results.json results.previous.json` before
-the new run.)
 
 Then surface one short summary to the user:
 
@@ -182,7 +192,13 @@ Write each statement as a string in the turn's `checks` array. Empty array
 is allowed if the user has no extra structural requirements beyond the 20
 standard NLP checks.
 
-If `may_diverge: false`: leave `checks` empty.
+If `may_diverge: false`: default to leaving `checks` empty (the exact-match
+gate is enough for most scripted turns). The runner *will* still evaluate
+custom `checks` on exact-match turns if you provide them, so ask the user
+"is there anything semantically required beyond the verbatim text?" only if
+the turn has something structural worth checking (e.g., a generated
+confirmation number must be present even though the surrounding text is
+scripted). When in doubt, skip it.
 
 ### Step 4: Outcome
 
@@ -219,8 +235,11 @@ Use this exact top-level structure:
 }
 ```
 
-Each `Scenario` has these keys, in this order, with `null` / empty values
-omitted when allowed by the schema:
+Each `Scenario` may include the keys below. Use this preferred order when
+emitting JSON (the loader doesn't enforce key order, but it makes diffs and
+review cleaner). Empty arrays such as `tags: []`, `tool_loops: []`, and
+`checks: []` are fine to emit verbatim — they validate against the schema —
+or you can omit them entirely.
 
 - `id` (string, required)
 - `name` (string, required)
@@ -252,18 +271,24 @@ snake_case label like `initiate_booking`, `request_large_refund`,
   "role": "agent",
   "tool_loops": [ /* zero or more ToolLoop */ ],
   "golden_response": "<verbatim agent text reply>",
-  "checks": [ /* strings, only if may_diverge */ ],
+  "checks": [ /* optional per-scenario binary NL checks, see below */ ],
   "may_diverge": false,
   "divergence_note": "<optional: explain why divergence is or isn't allowed>"
 }
 ```
 
-Order rules the runner enforces (do not violate):
+Rules the runner enforces (do not violate):
 
 - Turns alternate: user, agent, user, agent, ... starting with user.
 - Every agent turn must have `golden_response` (non-empty string).
-- If `may_diverge: false`, `checks` should be empty (the deterministic
-  equality check is the gate).
+
+Notes on `checks` (these are recommendations, not enforced):
+
+- Custom `checks` run **regardless** of `may_diverge`. The 20 standard
+  NLP-consistency checks only run when `may_diverge: true`; custom checks
+  run in both modes (in addition to exact-match when `may_diverge: false`).
+- If you want zero LLM calls on a turn, leave `checks` empty AND set
+  `may_diverge: false`. The exact-match path is then pure Python.
 - If `may_diverge: true`, `checks` may be empty (the 20 standard NLP checks
   still run) but ideally has 1-4 entries.
 
@@ -362,8 +387,14 @@ can try it against the mock first:
   but the transcript shows the agent calling with amount 1000, the scenario
   records what the agent *actually did* (so the test fails until the agent
   is fixed). Ask the user which one is the source of truth before deciding.
-- It does not call TrainForge or run anything. It writes JSON. The user runs
-  `trainforge run` themselves.
+- It does not invent test data. It does not call an LLM as part of
+  generating the scenario. The scenario JSON is produced by reading the
+  transcript and asking the user, nothing else.
+- It *does* invoke `trainforge run` and `trainforge diff` automatically
+  after agent changes, per the standing rule at the top of this file —
+  provided the coding agent has terminal access. If the coding agent does
+  not have terminal access, it should print the exact commands instead and
+  ask the user to run them.
 
 ## Examples
 
