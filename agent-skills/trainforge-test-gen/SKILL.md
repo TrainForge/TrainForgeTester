@@ -15,6 +15,70 @@ TrainForge scenario JSON file. The output runs against
 `trainforge run --scenarios <file>` and produces deterministic pass/fail
 results, not fuzzy 0-1 scores.
 
+You also have a **standing job** for the rest of this project (see below):
+after every change the user makes to their agent's prompt, model, or tools,
+re-run the scenarios and tell them what passed or failed. Generating the
+scenario is only the first time you do this work.
+
+## Standing rule: auto-run tests after every agent change
+
+Once at least one scenario exists in `scenarios/` (or wherever the user
+keeps them in their repo), treat the following as a persistent instruction
+until the user says "stop auto-running tests" or "pause regression
+testing":
+
+After every change to:
+
+- system prompt files, prompt templates, or anything that looks like agent
+  instructions
+- the model name in config or code
+- tool definitions (new, removed, signature-changed)
+- tool implementations the agent calls
+
+run:
+
+```
+trainforge run \
+  --scenarios scenarios/ \
+  --agent-url <user's agent URL> \
+  --output results.json
+```
+
+If a previous `results.json` exists, follow up with:
+
+```
+trainforge diff \
+  --before results.previous.json \
+  --after results.json \
+  --output regression.html
+```
+
+(Rotate the previous file: `mv results.json results.previous.json` before
+the new run.)
+
+Then surface one short summary to the user:
+
+- How many scenarios passed and failed.
+- If any **previously-passing scenario now fails**, name it and the turn it
+  broke on. This is the highest priority signal. Do not bury it.
+- If a previously-failing scenario now passes, say that too.
+
+Rules:
+
+- Do **not** re-run on unrelated changes: README edits, formatting, the
+  scenarios themselves, comments, dependency bumps that don't touch the
+  agent path.
+- If `trainforge run` takes more than ~30 seconds, run it in the background
+  and keep working; surface the result the moment it lands.
+- If the user does not yet have a live `--agent-url`, ask once for it and
+  remember it for the rest of the session.
+- If the user has not generated any scenarios yet, do not auto-run. Offer
+  to generate one from a transcript instead (the workflow below).
+
+This standing rule is the point of the skill. Generating one scenario from
+one transcript is a single use. The regression loop is what makes the
+agent get better instead of regressing silently.
+
 ## What TrainForge needs to know
 
 TrainForge tests an agent in two ways:
