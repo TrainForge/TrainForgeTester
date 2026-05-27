@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from trainforge.agent_client import AgentReply
+from trainforge.transport import AgentReply
 from trainforge.runner import ScenarioRunner
 from trainforge.schema import load_scenarios
 from trainforge.tool_validator import AgentToolCall, LoopMatcher, validate_arguments
@@ -181,7 +181,7 @@ class ScriptedAgent:
         self._replies = list(replies)
         self.received_histories: list[list[dict]] = []
 
-    def chat(self, messages):  # type: ignore[no-untyped-def]
+    async def chat(self, messages):  # type: ignore[no-untyped-def]
         self.received_histories.append([dict(m) for m in messages])
         return self._replies.pop(0)
 
@@ -190,7 +190,7 @@ def _tool_call(name: str, arguments: dict, call_id: str | None = None) -> AgentT
     return AgentToolCall(name=name, arguments=arguments, id=call_id)
 
 
-def test_full_run_tool_loops_pass(tools_scenarios_path: Path, fake_llm) -> None:
+async def test_full_run_tool_loops_pass(tools_scenarios_path: Path, fake_llm) -> None:
     scenario = load_scenarios(tools_scenarios_path).scenarios[0]
     agent = ScriptedAgent(
         [
@@ -222,7 +222,7 @@ def test_full_run_tool_loops_pass(tools_scenarios_path: Path, fake_llm) -> None:
     fake_llm.queue_compact([1, 1])   # outcome: both checks pass
 
     runner = ScenarioRunner(agent=agent, llm=fake_llm)  # type: ignore[arg-type]
-    result = runner.run_scenario(scenario, runs=1)
+    result = await runner.run_scenario(scenario, runs=1)
 
     run = result.runs[0]
     assert run.status == "pass", [tc.status for tc in run.turns[0].tool_calls]
@@ -233,7 +233,7 @@ def test_full_run_tool_loops_pass(tools_scenarios_path: Path, fake_llm) -> None:
     assert turn.exact_match is True
 
 
-def test_wrong_tool_reports_failure_but_injects_golden(
+async def test_wrong_tool_reports_failure_but_injects_golden(
     tools_scenarios_path: Path, fake_llm
 ) -> None:
     """Golden-injection invariant for tool_calls: even when the agent calls
@@ -271,7 +271,7 @@ def test_wrong_tool_reports_failure_but_injects_golden(
     fake_llm.queue_compact([1, 1])   # outcome
 
     runner = ScenarioRunner(agent=agent, llm=fake_llm)  # type: ignore[arg-type]
-    result = runner.run_scenario(scenario, runs=1)
+    result = await runner.run_scenario(scenario, runs=1)
 
     tool_results = result.runs[0].turns[0].tool_calls
     statuses = [tc.status for tc in tool_results]
@@ -303,7 +303,7 @@ def test_wrong_tool_reports_failure_but_injects_golden(
     assert "another_bad_one" not in all_names
 
 
-def test_missing_tool_when_agent_emits_text_early(
+async def test_missing_tool_when_agent_emits_text_early(
     tools_scenarios_path: Path, fake_llm
 ) -> None:
     scenario = load_scenarios(tools_scenarios_path).scenarios[0]
@@ -335,7 +335,7 @@ def test_missing_tool_when_agent_emits_text_early(
     fake_llm.queue_compact([1, 1])   # outcome
 
     runner = ScenarioRunner(agent=agent, llm=fake_llm)  # type: ignore[arg-type]
-    result = runner.run_scenario(scenario, runs=1)
+    result = await runner.run_scenario(scenario, runs=1)
     tool_results = result.runs[0].turns[0].tool_calls
     statuses = [tc.status for tc in tool_results]
     assert "pass" in statuses
@@ -345,7 +345,7 @@ def test_missing_tool_when_agent_emits_text_early(
     assert missed[0].expected_name == "check_availability"
 
 
-def test_invalid_arguments_records_failure(
+async def test_invalid_arguments_records_failure(
     tools_scenarios_path: Path, fake_llm
 ) -> None:
     scenario = load_scenarios(tools_scenarios_path).scenarios[0]
@@ -375,7 +375,7 @@ def test_invalid_arguments_records_failure(
     fake_llm.queue_compact([1, 1])   # outcome
 
     runner = ScenarioRunner(agent=agent, llm=fake_llm)  # type: ignore[arg-type]
-    result = runner.run_scenario(scenario, runs=1)
+    result = await runner.run_scenario(scenario, runs=1)
     tool_results = result.runs[0].turns[0].tool_calls
     statuses = [tc.status for tc in tool_results]
     assert statuses.count("invalid_arguments") == 1
@@ -478,7 +478,7 @@ def test_expected_literal_value_takes_precedence_over_type_only() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_wrong_expected_value_fails_run(
+async def test_wrong_expected_value_fails_run(
     tools_scenarios_path: Path, fake_llm
 ) -> None:
     """The case the user called out: tool call is structurally valid but the
@@ -512,7 +512,7 @@ def test_wrong_expected_value_fails_run(
     fake_llm.queue_compact([1, 1])   # outcome
 
     runner = ScenarioRunner(agent=agent, llm=fake_llm)  # type: ignore[arg-type]
-    result = runner.run_scenario(scenario, runs=1)
+    result = await runner.run_scenario(scenario, runs=1)
 
     avail = next(
         tc for tc in result.runs[0].turns[0].tool_calls
@@ -524,7 +524,7 @@ def test_wrong_expected_value_fails_run(
     assert result.runs[0].status != "pass"
 
 
-def test_no_llm_calls_for_tool_argument_validation(
+async def test_no_llm_calls_for_tool_argument_validation(
     tools_scenarios_path: Path, fake_llm
 ) -> None:
     """Tool-argument checking is purely deterministic: for a fully-passing
@@ -556,7 +556,7 @@ def test_no_llm_calls_for_tool_argument_validation(
     fake_llm.queue_compact([1, 1])   # outcome
 
     runner = ScenarioRunner(agent=agent, llm=fake_llm)  # type: ignore[arg-type]
-    runner.run_scenario(scenario, runs=1)
+    await runner.run_scenario(scenario, runs=1)
     # 1 custom-check eval + 1 outcome eval -> exactly 2 LLM calls.
     # Tool-call validation never hits the LLM (deterministic).
     assert len(fake_llm.calls) == 2

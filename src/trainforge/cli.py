@@ -1,14 +1,17 @@
 """``trainforge`` CLI entry points.
 
-Four subcommands matching testing-spec-v1.md section "CLI Interface":
+Five subcommands matching testing-spec-v1.md section "CLI Interface" plus
+the in-process expansions:
 
-- ``trainforge run``        - execute scenarios against an agent API.
+- ``trainforge run``        - execute scenarios against an agent (HTTP or in-process).
+- ``trainforge record``     - REPL capture mode: talk to your agent, write a scenario.
 - ``trainforge report``     - render HTML from a results file.
 - ``trainforge diff``       - compare two results files for regressions.
 - ``trainforge mock-agent`` - serve a fake agent for development.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import sys
@@ -19,15 +22,21 @@ import click
 from dotenv import find_dotenv, load_dotenv
 
 from trainforge import __version__
-from trainforge.agent_client import AgentClient
+from trainforge.agent_resolver import AgentResolutionError, resolve_in_process_agent
+from trainforge.config import override_scope
 from trainforge.diff import compute_diff
 from trainforge.errors import MalformedScenarioError, UnsupportedScenarioVersionError
-from trainforge.llm.base import LLMClient, OPENAI_COMPAT_DEFAULT_MODEL
+from trainforge.llm.base import (
+    LLMClient,
+    MissingLLMCredentialsError,
+    OPENAI_COMPAT_DEFAULT_MODEL,
+)
 from trainforge.mock_agent import MODES as MOCK_MODES, MockAgentServer
 from trainforge.report import render_diff_html, render_report_html
 from trainforge.results import build_run_results, write_results
 from trainforge.runner import ScenarioRunner
 from trainforge.schema import load_results, load_scenarios
+from trainforge.transport import HttpTransport, InProcessTransport, Transport
 
 log = logging.getLogger("trainforge")
 
@@ -85,7 +94,20 @@ def _load_dotenv_from_tree() -> None:
 
 @cli.command("run")
 @click.option("--scenarios", "scenarios_path", type=click.Path(exists=True, dir_okay=False), required=True)
-@click.option("--agent-url", required=True, help="POST endpoint of the agent under test.")
+@click.option(
+    "--agent-url",
+    default=None,
+    help="POST endpoint of an HTTP agent under test. Mutually exclusive with --agent.",
+)
+@click.option(
+    "--agent",
+    "agent_spec",
+    default=None,
+    help=(
+        "In-process agent spec, uvicorn-style: 'module:callable' or "
+        "'module:factory()'. Mutually exclusive with --agent-url."
+    ),
+)
 @click.option(
     "--llm-api-url",
     default=None,
@@ -108,20 +130,63 @@ def _load_dotenv_from_tree() -> None:
     default=None,
     help=f"Evaluator model ID. Default: {OPENAI_COMPAT_DEFAULT_MODEL!r}.",
 )
+@click.option(
+    "--override-model",
+    "override_model",
+    default=None,
+    help=(
+        "Set TRAINFORGE_OVERRIDE_MODEL (env + ContextVar) for the duration of this run. "
+        "Agents that read it can swap models without code changes."
+    ),
+)
+@click.option(
+    "--override-prompt",
+    "override_prompt_path",
+    default=None,
+    type=click.Path(exists=True, dir_okay=False),
+    help=(
+        "Path to a prompt file. Its contents are set as TRAINFORGE_OVERRIDE_PROMPT "
+        "(env + ContextVar) for the run."
+    ),
+)
 @click.option("--runs", type=click.IntRange(min=1), default=1, show_default=True, help="Number of runs per scenario for consistency.")
 @click.option("--timeout", "timeout_seconds", type=click.FloatRange(min=1.0), default=30.0, show_default=True, help="Per-request agent timeout in seconds.")
+@click.option(
+    "--parallel",
+    "parallel",
+    type=click.IntRange(min=1),
+    default=1,
+    show_default=True,
+    help=(
+        "Run up to N scenarios concurrently via asyncio.gather. Higher values "
+        "shorten total wall time but may trip judge-LLM rate limits."
+    ),
+)
 @click.option("--output", "output_path", type=click.Path(dir_okay=False), required=True, help="Where to write results.json.")
 def run_cmd(
     scenarios_path: str,
-    agent_url: str,
+    agent_url: str | None,
+    agent_spec: str | None,
     llm_api_url: str | None,
     llm_api_key: str | None,
     llm_model: str | None,
+    override_model: str | None,
+    override_prompt_path: str | None,
     runs: int,
     timeout_seconds: float,
+    parallel: int,
     output_path: str,
 ) -> None:
-    """Run scenarios against an agent API (static mode)."""
+    """Run scenarios against an agent (HTTP endpoint OR in-process callable)."""
+    if agent_url and agent_spec:
+        raise click.ClickException(
+            "--agent and --agent-url are mutually exclusive; pass exactly one"
+        )
+    if not agent_url and not agent_spec:
+        raise click.ClickException(
+            "pass --agent <module:callable> or --agent-url <http endpoint>"
+        )
+
     try:
         scenarios_file = load_scenarios(scenarios_path)
     except UnsupportedScenarioVersionError as exc:
@@ -135,8 +200,37 @@ def run_cmd(
         llm_api_key=llm_api_key,
         model=resolved_model,
     )
-    agent = AgentClient(url=agent_url, timeout_seconds=timeout_seconds)
+
+    agent: Transport
+    transport_label: str
+    if agent_spec:
+        try:
+            callable_ = resolve_in_process_agent(agent_spec)
+        except AgentResolutionError as exc:
+            raise click.ClickException(str(exc)) from exc
+        agent = InProcessTransport(
+            agent=callable_,
+            timeout_seconds=timeout_seconds,
+            source=agent_spec,
+        )
+        transport_label = f"in-process {agent_spec}"
+    else:
+        assert agent_url is not None
+        agent = HttpTransport(url=agent_url, timeout_seconds=timeout_seconds)
+        transport_label = agent_url
+
     runner = ScenarioRunner(agent=agent, llm=llm)
+
+    override_prompt = None
+    if override_prompt_path is not None:
+        try:
+            from trainforge.config import load_prompt_file
+
+            override_prompt = load_prompt_file(override_prompt_path)
+        except OSError as exc:
+            raise click.ClickException(
+                f"could not read --override-prompt file: {exc}"
+            ) from exc
 
     scenarios = scenarios_file.scenarios
     total_turns = sum(
@@ -144,7 +238,6 @@ def run_cmd(
         for sc in scenarios
     )
 
-    scenario_results: list = []
     with click.progressbar(
         length=max(total_turns, 1),
         label=f"Running {len(scenarios)} scenario(s) x {runs} run(s)",
@@ -156,12 +249,23 @@ def run_cmd(
         def _tick() -> None:
             bar.update(1)
 
-        for scenario in scenarios:
-            bar.label = f"{scenario.id} {_truncate(scenario.name, 48)}"
-            result = runner.run_scenario(
-                scenario, runs=runs, on_turn_complete=_tick
-            )
-            scenario_results.append(result)
+        with override_scope(model=override_model, prompt=override_prompt):
+            try:
+                scenario_results = asyncio.run(
+                    _run_all_scenarios(
+                        runner=runner,
+                        scenarios=scenarios,
+                        runs=runs,
+                        parallel=parallel,
+                        on_turn_complete=_tick,
+                        bar=bar,
+                    )
+                )
+            except MissingLLMCredentialsError as exc:
+                # The lazy stub fired because a scenario actually needed
+                # the judge. Surface as a Click error so the user sees a
+                # clean one-line message, not a stack trace.
+                raise click.ClickException(str(exc)) from exc
 
     click.echo("")
     for sc, result in zip(scenarios, scenario_results):
@@ -175,7 +279,7 @@ def run_cmd(
 
     results = build_run_results(
         scenario_results,
-        agent_url=agent_url,
+        agent_url=transport_label,
         llm_model=resolved_model,
         runs=runs,
         timeout_seconds=timeout_seconds,
@@ -315,6 +419,88 @@ def diff_cmd(
 
 
 # ---------------------------------------------------------------------------
+# Async orchestration of scenario runs
+# ---------------------------------------------------------------------------
+
+
+async def _run_all_scenarios(
+    *,
+    runner: ScenarioRunner,
+    scenarios,
+    runs: int,
+    parallel: int,
+    on_turn_complete: Callable[[], None],
+    bar,
+):
+    """Run scenarios sequentially (parallel=1) or via gather+semaphore."""
+    if parallel <= 1:
+        results = []
+        for scenario in scenarios:
+            bar.label = f"{scenario.id} {_truncate(scenario.name, 48)}"
+            result = await runner.run_scenario(
+                scenario, runs=runs, on_turn_complete=on_turn_complete
+            )
+            results.append(result)
+        return results
+
+    sem = asyncio.Semaphore(parallel)
+
+    async def _bounded(sc):
+        async with sem:
+            return await runner.run_scenario(
+                sc, runs=runs, on_turn_complete=on_turn_complete
+            )
+
+    return await asyncio.gather(*(_bounded(sc) for sc in scenarios))
+
+
+# ---------------------------------------------------------------------------
+# trainforge record (capture mode)
+# ---------------------------------------------------------------------------
+
+
+@cli.command("record")
+@click.option(
+    "--agent",
+    "agent_spec",
+    required=True,
+    help="In-process agent spec, uvicorn-style: 'module:callable' or 'module:factory()'.",
+)
+@click.option(
+    "--output",
+    "output_path",
+    required=True,
+    type=click.Path(dir_okay=False),
+    help="Path to write the captured scenario JSON.",
+)
+@click.option(
+    "--timeout",
+    "timeout_seconds",
+    type=click.FloatRange(min=1.0),
+    default=30.0,
+    show_default=True,
+    help="Per-turn agent timeout in seconds.",
+)
+def record_cmd(agent_spec: str, output_path: str, timeout_seconds: float) -> None:
+    """Capture mode: chat with your agent, write a scenario file."""
+    try:
+        callable_ = resolve_in_process_agent(agent_spec)
+    except AgentResolutionError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    from trainforge.record import run_record_loop
+
+    exit_code = run_record_loop(
+        agent_callable=callable_,
+        agent_spec=agent_spec,
+        output_path=output_path,
+        timeout_seconds=timeout_seconds,
+    )
+    if exit_code != 0:
+        sys.exit(exit_code)
+
+
+# ---------------------------------------------------------------------------
 # trainforge mock-agent
 # ---------------------------------------------------------------------------
 
@@ -351,16 +537,14 @@ def _build_llm_client(
         return factory(api_key=llm_api_key, model=model)
 
     key = _resolve_llm_api_key(llm_api_key)
-    if not key:
-        raise click.ClickException(
-            "missing LLM API key; pass --llm-api-key or set $OPENAI_API_KEY"
-        )
-
     base_url = _resolve_llm_api_url(llm_api_url)
-    if not base_url:
-        raise click.ClickException(
-            "missing LLM API URL; pass --llm-api-url or set $OPENAI_API_URL"
-        )
+
+    if not key or not base_url:
+        # Defer: scenarios that don't need a judge will run fine; ones
+        # that do will see a helpful error from the stub on first call.
+        from trainforge.llm.base import LazyMissingLLMClient
+
+        return LazyMissingLLMClient(model=model)
 
     from trainforge.llm.openai_compatible_client import OpenAICompatibleClient
 

@@ -1,0 +1,24 @@
+{
+  "version": "2.0",
+  "scenarios": [
+    {
+      "id": "sc-quickstart-001",
+      "name": "Quickstart: agent echoes the user",
+      "description": "Sanity-check scenario for the in-process transport. The agent echoes the user's message verbatim inside its reply.",
+      "tags": ["quickstart", "in-process"],
+      "turns": [
+        {
+          "role": "user",
+          "message": "book me a table for tonight"
+        },
+        {
+          "role": "agent",
+          "golden_response": "[model=echo-1] Hello! I heard: 'book me a table for tonight'. (You are a friendly concierge. Greet the user.)",
+          "may_diverge": false
+        }
+      ],
+      "expected_outcome": "Agent greets the user and echoes the request verbatim.",
+      "outcome_checks": []
+    }
+  ]
+}

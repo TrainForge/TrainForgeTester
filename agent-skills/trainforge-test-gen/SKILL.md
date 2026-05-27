@@ -45,10 +45,22 @@ for f in scenarios/*.json; do
   mv "results-$base.json" "results-$base.previous.json" 2>/dev/null || true
   trainforge run \
     --scenarios "$f" \
-    --agent-url <user's agent URL> \
+    --agent <user's module:callable OR fallback to --agent-url> \
     --output "results-$base.json"
 done
 ```
+
+Pick the transport:
+
+- **Prefer `--agent module:callable`** when the user's agent is a Python
+  callable (LangChain, CrewAI, LangGraph, OpenAI Agents SDK, plain async
+  function in a notebook). The in-process transport is faster, supports
+  `node_assertions`, and works without standing up an HTTP server.
+- **Use `--agent-url <http endpoint>`** only when the user's agent is
+  already running as an HTTP service in production and they want to test
+  it through the real wire.
+
+Mutually exclusive — pass exactly one.
 
 `trainforge run` also requires LLM access for the per-scenario outcome check
 and any `may_diverge: true` turns. Either set `OPENAI_API_KEY` and
