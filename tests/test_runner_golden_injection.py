@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from trainforge.agent_client import AgentClient, AgentReply
+from trainforge.transport import AgentReply, HttpTransport as AgentClient
 from trainforge.runner import ScenarioRunner
 from trainforge.schema import load_scenarios
 
@@ -27,7 +27,7 @@ class RecordingAgent:
         ]
         self.received_histories: list[list[dict]] = []
 
-    def chat(self, messages):  # type: ignore[no-untyped-def]
+    async def chat(self, messages):  # type: ignore[no-untyped-def]
         self.received_histories.append([dict(m) for m in messages])
         return self._replies.pop(0)
 
@@ -46,7 +46,7 @@ def _queue_small_fixture_passing_run(fake_llm) -> None:
     fake_llm.queue_compact([1, 1])  # outcome
 
 
-def test_agent_sees_golden_history_not_actual(
+async def test_agent_sees_golden_history_not_actual(
     small_scenarios_path: Path, fake_llm
 ) -> None:
     scenarios = load_scenarios(small_scenarios_path).scenarios
@@ -58,7 +58,7 @@ def test_agent_sees_golden_history_not_actual(
     _queue_small_fixture_passing_run(fake_llm)  # custom checks + outcome
 
     runner = ScenarioRunner(agent=agent, llm=fake_llm)  # type: ignore[arg-type]
-    result = runner.run_scenario(scenario, runs=1)
+    result = await runner.run_scenario(scenario, runs=1)
     assert len(result.runs) == 1
 
     # Both turns have exact_match=False (text didn't match).
@@ -77,7 +77,7 @@ def test_agent_sees_golden_history_not_actual(
     assert {"role": "agent", "content": "WRONG FIRST"} not in second_history
 
 
-def test_outcome_eval_sees_actual_responses_not_golden(
+async def test_outcome_eval_sees_actual_responses_not_golden(
     small_scenarios_path: Path, fake_llm
 ) -> None:
     """Outcome eval must receive the actual transcript."""
@@ -89,7 +89,7 @@ def test_outcome_eval_sees_actual_responses_not_golden(
     _queue_small_fixture_passing_run(fake_llm)
 
     runner = ScenarioRunner(agent=agent, llm=fake_llm)  # type: ignore[arg-type]
-    runner.run_scenario(scenario, runs=1)
+    await runner.run_scenario(scenario, runs=1)
 
     # Last LLM call is the outcome eval; its user prompt should include the
     # actual ("wrong") agent text and NOT the golden text.
@@ -99,7 +99,7 @@ def test_outcome_eval_sees_actual_responses_not_golden(
     assert scenario.turns[1].golden_response not in user  # type: ignore[union-attr]
 
 
-def test_runner_returns_per_turn_golden_and_actual(
+async def test_runner_returns_per_turn_golden_and_actual(
     small_scenarios_path: Path, fake_llm
 ) -> None:
     scenarios = load_scenarios(small_scenarios_path).scenarios
@@ -114,7 +114,7 @@ def test_runner_returns_per_turn_golden_and_actual(
     _queue_small_fixture_passing_run(fake_llm)
 
     runner = ScenarioRunner(agent=agent, llm=fake_llm)  # type: ignore[arg-type]
-    result = runner.run_scenario(scenario, runs=1)
+    result = await runner.run_scenario(scenario, runs=1)
 
     turn0 = result.runs[0].turns[0]
     assert turn0.actual_response == scenario.turns[1].golden_response  # type: ignore[union-attr]
@@ -125,7 +125,7 @@ def test_runner_returns_per_turn_golden_and_actual(
     assert all(c.passed for c in turn0.checks)
 
 
-def test_runner_multi_run(small_scenarios_path: Path, fake_llm) -> None:
+async def test_runner_multi_run(small_scenarios_path: Path, fake_llm) -> None:
     scenarios = load_scenarios(small_scenarios_path).scenarios
     scenario = scenarios[0]
     # All 3 runs send exactly the golden text.
@@ -137,14 +137,14 @@ def test_runner_multi_run(small_scenarios_path: Path, fake_llm) -> None:
         _queue_small_fixture_passing_run(fake_llm)
 
     runner = ScenarioRunner(agent=agent, llm=fake_llm)  # type: ignore[arg-type]
-    result = runner.run_scenario(scenario, runs=3)
+    result = await runner.run_scenario(scenario, runs=3)
     assert len(result.runs) == 3
     assert all(r.status == "pass" for r in result.runs), [r.status for r in result.runs]
     assert result.consistency == 1.0
     assert result.inconsistent is False
 
 
-def test_empty_response_is_treated_as_failure(
+async def test_empty_response_is_treated_as_failure(
     small_scenarios_path: Path, fake_llm
 ) -> None:
     scenarios = load_scenarios(small_scenarios_path).scenarios
@@ -158,7 +158,7 @@ def test_empty_response_is_treated_as_failure(
     fake_llm.queue_compact([1, 1])  # outcome
 
     runner = ScenarioRunner(agent=agent, llm=fake_llm)  # type: ignore[arg-type]
-    result = runner.run_scenario(scenario, runs=1)
+    result = await runner.run_scenario(scenario, runs=1)
     run = result.runs[0]
     assert run.turns[0].status == "empty_response"
     assert run.turns[0].exact_match is False

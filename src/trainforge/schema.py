@@ -144,6 +144,42 @@ class UserTurn(_StrictModel):
         return v
 
 
+class NodeAssertion(_StrictModel):
+    """Assert which sub-agent / node fired inside an in-process agent turn.
+
+    For agents that use sub-agents or a graph (LangGraph, OpenAI Agents
+    SDK handoffs, custom orchestrators), scenarios can assert that a
+    specific node fired during the turn's invocation. The user wraps the
+    sub-agent call in ``with observer.node("name"): ...`` and the runner
+    reads :attr:`trainforge.observer.captured_nodes` after the agent
+    returns.
+
+    Semantics under golden injection:
+      The runner replaces the agent's actual reply with the golden text
+      in subsequent turns. ``node_assertions`` therefore describe nodes
+      that fired during the agent's invocation against whatever history
+      (golden-injected or not) it saw. The assertion is about behavior
+      under the golden-injected context, the same rule the text and
+      tool-call evaluation already follows.
+
+    Only meaningful when running in-process; the HTTP transport has no
+    way to read the user's process state.
+    """
+
+    node_name: str
+    """Name passed to ``observer.node(name=...)``. Exact-match."""
+    must_fire: bool = True
+    """If ``True`` (default), the assertion passes when this node fired
+    during the turn. If ``False``, the assertion passes when this node did
+    NOT fire (useful for guard rails: 'refund_handler must not fire on a
+    sub-$10 question')."""
+    args_match: dict[str, object] | None = None
+    """Optional literal-equality check on args passed to ``observer.node``.
+    When set, each key/value in the dict must equal the corresponding key
+    in the observed call's args. Extra keys in observed args are allowed
+    (permissive, same rule as tool arguments_schema)."""
+
+
 class AgentTurn(_StrictModel):
     role: AgentRole
     tool_loops: list[ToolLoop] = Field(default_factory=list)
@@ -161,6 +197,11 @@ class AgentTurn(_StrictModel):
     rephrase; the runner then evaluates the 20 standard NLP-consistency
     checks via LLM instead of doing string equality."""
     divergence_note: str | None = None
+    node_assertions: list[NodeAssertion] = Field(default_factory=list)
+    """Optional in-process-only assertions about which sub-agents / nodes
+    fired during this turn. Requires the agent to wrap sub-agent calls in
+    ``with trainforge.observer.node(name): ...``. Ignored by the HTTP
+    transport; absent / empty is the no-op default."""
 
 
 Turn = UserTurn | AgentTurn
@@ -298,7 +339,23 @@ class TurnResult(_StrictModel):
     ``may_diverge=True``; empty otherwise."""
     checks: list[CheckResult] = Field(default_factory=list)
     """Per-scenario custom check verdicts (always run when there are any)."""
+    node_assertion_results: list[NodeAssertionResult] = Field(default_factory=list)
+    """Per-scenario in-process node-fire verdicts. Empty when the agent
+    declared no ``node_assertions``, or when running over HTTP (the HTTP
+    transport cannot observe in-process state)."""
     error: str | None = None
+
+
+class NodeAssertionResult(_StrictModel):
+    """Verdict for one ``NodeAssertion`` after a turn ran in-process."""
+
+    node_name: str
+    must_fire: bool
+    fired: bool
+    """Whether the node was observed firing during the turn."""
+    passed: bool
+    """``True`` when (must_fire == fired) and any ``args_match`` is satisfied."""
+    explanation: str = ""
 
 
 class OutcomeStatus(StrEnum):

@@ -28,18 +28,20 @@ TrainForge 0.1 deterministic-first model:
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 from dataclasses import dataclass
-from typing import Callable
+from typing import Awaitable, Callable
 
-from trainforge.agent_client import AgentClient, Message, Role
 from trainforge.errors import (
     AgentError,
     AgentTimeoutError,
     AgentUnreachableError,
     EvaluationError,
 )
+from trainforge import observer
+from trainforge.transport import Message, Role, Transport
 from trainforge.evaluation import (
     OutcomeEval,
     TurnEval,
@@ -52,6 +54,8 @@ from trainforge.schema import (
     ArgumentType,
     CheckResult,
     ExpectedTool,
+    NodeAssertion,
+    NodeAssertionResult,
     OutcomeResult,
     OutcomeStatus,
     Scenario,
@@ -94,29 +98,39 @@ _DEFAULT_ARGUMENTS_BY_TYPE: dict[ArgumentType, object] = {
 
 @dataclass
 class ScenarioRunner:
-    """Runs one scenario N times using golden injection."""
+    """Runs one scenario N times using golden injection.
 
-    agent: AgentClient
+    The runner is async-first. All agent invocations go through the
+    :class:`~trainforge.transport.Transport` protocol, which yields control
+    to the event loop on every network or in-process call. This lets the
+    ``--parallel N`` CLI flag overlap scenario execution via
+    ``asyncio.gather``. LLM judge calls remain synchronous internally but
+    are awaited from the runner via ``asyncio.to_thread`` so a slow judge
+    doesn't block other scenarios on the same event loop.
+    """
+
+    agent: Transport
     llm: LLMClient
 
-    def run_scenario(
+    async def run_scenario(
         self,
         scenario: Scenario,
         runs: int,
         *,
-        on_turn_complete: Callable[[], None] | None = None,
+        on_turn_complete: Callable[[], Awaitable[None] | None] | None = None,
     ) -> ScenarioResult:
         """Execute ``scenario`` ``runs`` times and aggregate the results.
 
         ``on_turn_complete`` is called once per *agent* turn processed
         (success or failure), useful for driving a progress bar. It is not
         called for user turns (which do no work beyond appending a
-        message to history).
+        message to history). It may be sync or async; awaitable returns
+        are awaited.
         """
         run_results: list[ScenarioRunResult] = []
         for run_index in range(runs):
             run_results.append(
-                self._single_run(
+                await self._single_run(
                     scenario, run_index, on_turn_complete=on_turn_complete
                 )
             )
@@ -136,12 +150,12 @@ class ScenarioRunner:
     # Per-run execution
     # ------------------------------------------------------------------
 
-    def _single_run(
+    async def _single_run(
         self,
         scenario: Scenario,
         run_index: int,
         *,
-        on_turn_complete: Callable[[], None] | None = None,
+        on_turn_complete: Callable[[], Awaitable[None] | None] | None = None,
     ) -> ScenarioRunResult:
         golden_history: list[Message] = []
         actual_history: list[Message] = []
@@ -161,7 +175,7 @@ class ScenarioRunner:
                 "schema validation should have ensured user-first alternation"
             )
 
-            turn_result = self._execute_agent_turn(
+            turn_result = await self._execute_agent_turn(
                 scenario=scenario,
                 turn_index=i,
                 agent_turn=turn,
@@ -171,7 +185,9 @@ class ScenarioRunner:
             )
             turn_results.append(turn_result)
             if on_turn_complete is not None:
-                on_turn_complete()
+                maybe_awaitable = on_turn_complete()
+                if asyncio.iscoroutine(maybe_awaitable):
+                    await maybe_awaitable
 
             # Golden injection: future turns see the GOLDEN text response.
             golden_history.append(
@@ -182,7 +198,7 @@ class ScenarioRunner:
             if turn_result.error == _AGENT_UNREACHABLE_ERROR:
                 return _unreachable_run(run_index, turn_results, turn_result.error)
 
-        outcome = self._evaluate_outcome(scenario, actual_history)
+        outcome = await self._evaluate_outcome(scenario, actual_history)
         status = classify_scenario_run(turn_results, outcome)
 
         return ScenarioRunResult(
@@ -196,7 +212,7 @@ class ScenarioRunner:
     # Agent turn execution
     # ------------------------------------------------------------------
 
-    def _execute_agent_turn(
+    async def _execute_agent_turn(
         self,
         *,
         scenario: Scenario,
@@ -206,11 +222,35 @@ class ScenarioRunner:
         golden_history: list[Message],
         actual_history: list[Message],
     ) -> TurnResult:
+        # Capture node observations for the entire turn (tool loops +
+        # text). Outside this scope, observer.node() is a no-op.
+        with observer.capture() as captured_nodes:
+            return await self._execute_agent_turn_observed(
+                scenario=scenario,
+                turn_index=turn_index,
+                agent_turn=agent_turn,
+                user_turn=user_turn,
+                golden_history=golden_history,
+                actual_history=actual_history,
+                captured_nodes=captured_nodes,
+            )
+
+    async def _execute_agent_turn_observed(
+        self,
+        *,
+        scenario: Scenario,
+        turn_index: int,
+        agent_turn: AgentTurn,
+        user_turn: UserTurn,
+        golden_history: list[Message],
+        actual_history: list[Message],
+        captured_nodes: list,
+    ) -> TurnResult:
         # --- Tool loops (deterministic; may be empty) --------------------
         tool_records: list[ToolCallRecord] = []
         for loop_index, loop in enumerate(agent_turn.tool_loops):
             try:
-                self._run_tool_loop(
+                await self._run_tool_loop(
                     scenario_id=scenario.id,
                     turn_index=turn_index,
                     loop_index=loop_index,
@@ -239,7 +279,7 @@ class ScenarioRunner:
         )
 
         try:
-            reply = self.agent.chat(list(golden_history))
+            reply = await self.agent.chat(list(golden_history))
         except AgentTimeoutError as exc:
             log.warning("agent timeout on scenario=%s turn=%d", scenario.id, turn_index)
             actual_history.append({"role": Role.AGENT, "content": ""})
@@ -256,6 +296,13 @@ class ScenarioRunner:
 
         actual_text = reply.text or ""
         actual_history.append({"role": Role.AGENT, "content": actual_text})
+
+        # Evaluate node assertions once for this turn, against whatever
+        # nodes fired during agent.chat() and any prior tool loops. Empty
+        # when the scenario declared no node_assertions (the common case).
+        node_results = _evaluate_node_assertions(
+            agent_turn.node_assertions, captured_nodes
+        )
 
         if not actual_text.strip():
             # Empty agent response: every check fails by definition.
@@ -275,19 +322,27 @@ class ScenarioRunner:
                 exact_match=False if not agent_turn.may_diverge else None,
                 standard_check_results=[],
                 checks=failed_customs,
+                node_assertion_results=node_results,
             )
 
         # ---- DETERMINISTIC PATH: exact text match ----------------------
         if not agent_turn.may_diverge:
-            return self._evaluate_exact_match(
+            # Most exact-match turns are pure Python equality. Wrap in
+            # to_thread anyway: if the scenario declares custom checks,
+            # _evaluate_exact_match will call the LLM, and we don't want
+            # to block the event loop while it runs.
+            result = await asyncio.to_thread(
+                self._evaluate_exact_match,
                 base=base,
                 agent_turn=agent_turn,
                 user_turn=user_turn,
                 actual_text=actual_text,
             )
+            return result.model_copy(update={"node_assertion_results": node_results})
 
         # ---- LLM PATH: 20 standard NLP checks + custom checks ----------
-        return self._evaluate_with_llm(
+        result = await asyncio.to_thread(
+            self._evaluate_with_llm,
             base=base,
             agent_turn=agent_turn,
             user_turn=user_turn,
@@ -295,6 +350,7 @@ class ScenarioRunner:
             scenario_id=scenario.id,
             turn_index=turn_index,
         )
+        return result.model_copy(update={"node_assertion_results": node_results})
 
     # ------------------------------------------------------------------
     # Text-turn evaluation paths
@@ -462,7 +518,7 @@ class ScenarioRunner:
     # Tool loop execution (unchanged from v0.1)
     # ------------------------------------------------------------------
 
-    def _run_tool_loop(
+    async def _run_tool_loop(
         self,
         *,
         scenario_id: str,
@@ -478,7 +534,7 @@ class ScenarioRunner:
 
         while not matcher.done and rounds < MAX_TOOL_ROUNDS_PER_LOOP:
             try:
-                reply = self.agent.chat(list(golden_history))
+                reply = await self.agent.chat(list(golden_history))
             except AgentTimeoutError as exc:
                 raise _AgentAbort(TurnStatus.AGENT_TIMEOUT, str(exc)) from exc
             except AgentError as exc:
@@ -574,14 +630,15 @@ class ScenarioRunner:
     # Outcome eval
     # ------------------------------------------------------------------
 
-    def _evaluate_outcome(
+    async def _evaluate_outcome(
         self, scenario: Scenario, actual_history: list[Message]
     ) -> OutcomeResult:
         if not scenario.outcome_checks:
             return OutcomeResult(status=OutcomeStatus.EVALUATED, checks=[])
 
         try:
-            outcome: OutcomeEval = evaluate_outcome(
+            outcome: OutcomeEval = await asyncio.to_thread(
+                evaluate_outcome,
                 self.llm,
                 conversation=[dict(m) for m in actual_history],
                 expected_outcome=scenario.expected_outcome,
@@ -724,6 +781,92 @@ def _default_for(t: ArgumentType) -> object:
     if t == ArgumentType.OBJECT:
         return {}
     return _DEFAULT_ARGUMENTS_BY_TYPE.get(t, "")
+
+
+def _evaluate_node_assertions(
+    assertions: list[NodeAssertion], captured: list
+) -> list[NodeAssertionResult]:
+    """Match :class:`NodeAssertion` declarations against observed node fires.
+
+    ``captured`` is the list yielded by :func:`trainforge.observer.capture`.
+    Each :class:`~trainforge.observer.NodeFire` has ``name`` and ``args``.
+
+    ``args_match`` is permissive: any keys absent from the assertion are
+    allowed in the observed args. Each declared key/value must equal the
+    observed args via Python ``==``.
+    """
+    if not assertions:
+        return []
+
+    fire_by_name: dict[str, list] = {}
+    for fire in captured:
+        fire_by_name.setdefault(fire.name, []).append(fire)
+
+    results: list[NodeAssertionResult] = []
+    for assertion in assertions:
+        fires = fire_by_name.get(assertion.node_name, [])
+        fired = bool(fires)
+
+        if assertion.must_fire and not fired:
+            results.append(
+                NodeAssertionResult(
+                    node_name=assertion.node_name,
+                    must_fire=True,
+                    fired=False,
+                    passed=False,
+                    explanation=f"node {assertion.node_name!r} never fired in this turn",
+                )
+            )
+            continue
+
+        if not assertion.must_fire and fired:
+            results.append(
+                NodeAssertionResult(
+                    node_name=assertion.node_name,
+                    must_fire=False,
+                    fired=True,
+                    passed=False,
+                    explanation=(
+                        f"node {assertion.node_name!r} fired "
+                        f"{len(fires)} time(s) but assertion required it NOT to fire"
+                    ),
+                )
+            )
+            continue
+
+        if assertion.must_fire and assertion.args_match:
+            # At least one observed fire must satisfy args_match.
+            matching = [
+                f for f in fires
+                if all(f.args.get(k) == v for k, v in assertion.args_match.items())
+            ]
+            if not matching:
+                first_args = fires[0].args if fires else {}
+                results.append(
+                    NodeAssertionResult(
+                        node_name=assertion.node_name,
+                        must_fire=True,
+                        fired=True,
+                        passed=False,
+                        explanation=(
+                            f"node {assertion.node_name!r} fired but no invocation "
+                            f"matched args_match (first observed args: {first_args!r})"
+                        ),
+                    )
+                )
+                continue
+
+        results.append(
+            NodeAssertionResult(
+                node_name=assertion.node_name,
+                must_fire=assertion.must_fire,
+                fired=fired,
+                passed=True,
+                explanation="",
+            )
+        )
+
+    return results
 
 
 def _decision_to_record(

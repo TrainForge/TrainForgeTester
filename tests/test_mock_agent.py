@@ -5,7 +5,7 @@ import socket
 from pathlib import Path
 
 import pytest
-import requests
+import httpx
 
 from trainforge.mock_agent import MockAgentServer
 
@@ -28,7 +28,7 @@ def test_golden_mode_returns_exact_golden(golden_server, small_scenarios) -> Non
     first_user = small_scenarios["scenarios"][0]["turns"][0]["message"]
     first_golden = small_scenarios["scenarios"][0]["turns"][1]["golden_response"]
 
-    resp = requests.post(
+    resp = httpx.post(
         golden_server.url,
         json={"messages": [{"role": "user", "content": first_user}]},
         timeout=5.0,
@@ -38,7 +38,7 @@ def test_golden_mode_returns_exact_golden(golden_server, small_scenarios) -> Non
 
 
 def test_unknown_user_message_returns_404(golden_server) -> None:
-    resp = requests.post(
+    resp = httpx.post(
         golden_server.url,
         json={"messages": [{"role": "user", "content": "totally unknown"}]},
         timeout=5.0,
@@ -47,7 +47,7 @@ def test_unknown_user_message_returns_404(golden_server) -> None:
 
 
 def test_bad_payload_returns_400(golden_server) -> None:
-    resp = requests.post(
+    resp = httpx.post(
         golden_server.url, data="not json", timeout=5.0
     )
     assert resp.status_code == 400
@@ -59,7 +59,7 @@ def test_diverge_mode_returns_perturbed(small_scenarios_path: Path, small_scenar
     try:
         first_user = small_scenarios["scenarios"][0]["turns"][0]["message"]
         first_golden = small_scenarios["scenarios"][0]["turns"][1]["golden_response"]
-        resp = requests.post(
+        resp = httpx.post(
             server.url,
             json={"messages": [{"role": "user", "content": first_user}]},
             timeout=5.0,
@@ -83,7 +83,7 @@ def test_error_mode_eventually_returns_error_status(small_scenarios_path: Path, 
     server.start()
     try:
         first_user = small_scenarios["scenarios"][0]["turns"][0]["message"]
-        resp = requests.post(
+        resp = httpx.post(
             server.url,
             json={"messages": [{"role": "user", "content": first_user}]},
             timeout=5.0,
@@ -110,7 +110,7 @@ def test_golden_mock_emits_tool_calls_for_tool_loops(tools_server) -> None:
     user_msg = "Book me a table for 2 at 7pm, indoor if it's raining."
 
     # Round 1: empty history -> mock should emit a tool_call for loop 0.
-    resp = requests.post(
+    resp = httpx.post(
         tools_server.url,
         json={"messages": [{"role": "user", "content": user_msg}]},
         timeout=5.0,
@@ -140,7 +140,7 @@ def test_golden_mock_advances_after_tool_responses(tools_server) -> None:
         },
         {"role": "tool", "tool_call_id": "c2", "name": "check_availability", "content": "Tables: corner (indoor), window (indoor)."},
     ]
-    resp = requests.post(tools_server.url, json={"messages": history}, timeout=5.0)
+    resp = httpx.post(tools_server.url, json={"messages": history}, timeout=5.0)
     assert resp.status_code == 200
     body = resp.json()
     # Loop 0 has 2 tools, both consumed -> next is loop 1 (book_table).
@@ -171,7 +171,7 @@ def test_golden_mock_emits_final_text_after_all_tools(tools_server) -> None:
         },
         {"role": "tool", "tool_call_id": "c3", "name": "book_table", "content": "Booking confirmed. Reference: X-7."},
     ]
-    resp = requests.post(tools_server.url, json={"messages": history}, timeout=5.0)
+    resp = httpx.post(tools_server.url, json={"messages": history}, timeout=5.0)
     assert resp.status_code == 200
     body = resp.json()
     assert body.get("response")
@@ -179,7 +179,7 @@ def test_golden_mock_emits_final_text_after_all_tools(tools_server) -> None:
 
 
 def test_unknown_path_returns_404(golden_server) -> None:
-    resp = requests.post(
+    resp = httpx.post(
         golden_server.url.replace("/chat", "/unknown"),
         json={"messages": [{"role": "user", "content": "x"}]},
         timeout=5.0,
@@ -188,12 +188,12 @@ def test_unknown_path_returns_404(golden_server) -> None:
 
 
 def test_missing_messages_returns_400(golden_server) -> None:
-    resp = requests.post(golden_server.url, json={}, timeout=5.0)
+    resp = httpx.post(golden_server.url, json={}, timeout=5.0)
     assert resp.status_code == 400
 
 
 def test_messages_without_user_returns_400(golden_server) -> None:
-    resp = requests.post(
+    resp = httpx.post(
         golden_server.url,
         json={"messages": [{"role": "agent", "content": "hello"}]},
         timeout=5.0,
@@ -219,7 +219,7 @@ def test_error_mode_timeout_branch_returns_after_sleep_patch(
     server.start()
     try:
         first_user = small_scenarios["scenarios"][0]["turns"][0]["message"]
-        resp = requests.post(
+        resp = httpx.post(
             server.url,
             json={"messages": [{"role": "user", "content": first_user}]},
             timeout=5.0,
