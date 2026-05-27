@@ -1,29 +1,31 @@
 """TrainForge pytest plugin.
 
-Auto-discovers TrainForge scenario JSON files and emits one parametrized
-pytest case per scenario. Failures show the TrainForge diagnostic (which
-turn, which tool, which arg mismatched) in the assertion message.
+Scenario JSON files become pytest test items directly via
+``pytest_collect_file`` — no shim test file required. Each scenario in a
+JSON file is one pytest case; failures show the TrainForge diagnostic
+(which turn, which tool, which arg mismatched) in the assertion message.
 
-Configuration (in ``pytest.ini`` / ``pyproject.toml``):
+Configuration:
 
+    # pytest.ini or pyproject.toml
     [tool.pytest.ini_options]
     trainforge_agent = "my_pkg.my_module:my_agent"
     trainforge_scenarios_dir = "tests/agent/scenarios"
 
 Or pass on the CLI:
 
-    pytest --trainforge-agent my_pkg.my_module:my_agent
+    pytest --trainforge-agent my_pkg.my_module:my_agent \\
+           --trainforge-scenarios-dir tests/agent/scenarios
 
 Limitations:
-    The pytest plugin runs each scenario once. Consistency scoring
-    (``runs > 1``) requires the ``trainforge run`` CLI, where the
-    aggregation across runs is meaningful in a single result file. In
-    pytest's "one test = one assertion" world, multi-run consistency is
-    awkward to render, so we keep it CLI-only on purpose.
+    Each scenario runs once. Consistency scoring (``runs > 1``) is
+    CLI-only by design — pytest's "one test = one assertion" model
+    doesn't map cleanly to N-run aggregation.
 """
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
 from typing import Any
 
@@ -31,10 +33,16 @@ import pytest
 
 from trainforge.agent_resolver import AgentResolutionError, resolve_in_process_agent
 from trainforge.errors import MalformedScenarioError, UnsupportedScenarioVersionError
-from trainforge.llm.base import OPENAI_COMPAT_DEFAULT_MODEL
+from trainforge.llm.base import (
+    LazyMissingLLMClient,
+    OPENAI_COMPAT_DEFAULT_MODEL,
+)
 from trainforge.runner import ScenarioRunner
 from trainforge.schema import Scenario, ScenarioStatus, load_scenarios
 from trainforge.transport import InProcessTransport
+
+_AGENT_CACHE_KEY = "_trainforge_agent_callable"
+_LLM_CACHE_KEY = "_trainforge_llm_client"
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
@@ -43,14 +51,16 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         "--trainforge-agent",
         dest="trainforge_agent",
         default=None,
-        help="In-process agent spec 'module:callable' (uvicorn-style). "
-        "Required for trainforge scenarios to run.",
+        help=(
+            "In-process agent spec 'module:callable' (uvicorn-style). "
+            "Required for trainforge scenarios to run."
+        ),
     )
     group.addoption(
         "--trainforge-scenarios-dir",
         dest="trainforge_scenarios_dir",
         default="tests/agent/scenarios",
-        help="Directory to scan for *.json scenario files. Default: tests/agent/scenarios.",
+        help="Directory to scan for *.json scenario files.",
     )
     parser.addini(
         "trainforge_agent",
@@ -74,129 +84,155 @@ def _resolve_config(config: pytest.Config) -> tuple[str | None, str]:
     return agent_spec, scenarios_dir
 
 
-def _discover_scenario_files(scenarios_dir: Path) -> list[Path]:
-    if not scenarios_dir.exists():
-        return []
-    return sorted(scenarios_dir.rglob("*.json"))
-
-
-def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
-    # No-op; collection is handled via `pytest_generate_tests` on the
-    # built-in fixture below.
-    return None
-
-
-@pytest.fixture(scope="session")
-def trainforge_agent_callable(pytestconfig: pytest.Config) -> Any:
-    agent_spec, _ = _resolve_config(pytestconfig)
+def _resolve_agent_once(config: pytest.Config) -> Any | None:
+    """Cache the resolved agent callable on the config so we don't
+    re-import the user's module per-scenario."""
+    cached = getattr(config, _AGENT_CACHE_KEY, None)
+    if cached is not None:
+        return cached
+    agent_spec, _ = _resolve_config(config)
     if not agent_spec:
-        pytest.skip(
-            "no --trainforge-agent configured; set --trainforge-agent module:callable "
-            "or add trainforge_agent to pytest config"
-        )
+        return None
     try:
-        return resolve_in_process_agent(agent_spec)
+        callable_ = resolve_in_process_agent(agent_spec)
     except AgentResolutionError as exc:
-        pytest.fail(f"could not resolve trainforge_agent={agent_spec!r}: {exc}")
+        raise pytest.UsageError(
+            f"could not resolve trainforge_agent={agent_spec!r}: {exc}"
+        ) from exc
+    setattr(config, _AGENT_CACHE_KEY, callable_)
+    return callable_
 
 
-def _collect_scenarios(config: pytest.Config) -> list[tuple[Path, Scenario]]:
-    _, scenarios_dir_str = _resolve_config(config)
-    scenarios_dir = Path(config.rootpath) / scenarios_dir_str
-    collected: list[tuple[Path, Scenario]] = []
-    for path in _discover_scenario_files(scenarios_dir):
-        try:
-            file = load_scenarios(str(path))
-        except (MalformedScenarioError, UnsupportedScenarioVersionError):
-            # Surface as a real test failure rather than crashing collection.
-            continue
-        for sc in file.scenarios:
-            collected.append((path, sc))
-    return collected
-
-
-def pytest_generate_tests(metafunc: pytest.Metafunc) -> None:
-    if "trainforge_scenario" not in metafunc.fixturenames:
-        return
-    pairs = _collect_scenarios(metafunc.config)
-    if not pairs:
-        return
-    ids = [f"{p.name}::{sc.id}" for p, sc in pairs]
-    metafunc.parametrize("trainforge_scenario", [sc for _, sc in pairs], ids=ids)
-
-
-@pytest.fixture(scope="session")
-def trainforge_llm():
-    """LLM client for the pytest plugin.
-
-    If ``OPENAI_API_KEY`` and ``OPENAI_API_URL`` are set, returns a real
-    OpenAI-compatible client. Otherwise returns
-    :class:`~trainforge.llm.base.LazyMissingLLMClient`: deterministic
-    scenarios (exact-match, no custom turn checks, no outcome_checks)
-    still run, and only LLM-dependent scenarios fail with a clear
-    "missing credentials" error when the judge is actually invoked.
-    """
-    import os
-
-    from trainforge.llm.base import LazyMissingLLMClient
+def _resolve_llm_once(config: pytest.Config):
+    """Lazy LLM: real client when credentials are present, stub
+    otherwise. Deterministic scenarios run without configuring an LLM
+    at all; LLM-dependent scenarios fail with a clear message when the
+    judge is invoked."""
+    cached = getattr(config, _LLM_CACHE_KEY, None)
+    if cached is not None:
+        return cached
 
     key = os.environ.get("OPENAI_API_KEY")
     url = os.environ.get("OPENAI_API_URL")
     if not key or not url:
-        return LazyMissingLLMClient()
+        client = LazyMissingLLMClient()
+    else:
+        from trainforge.llm.openai_compatible_client import OpenAICompatibleClient
 
-    from trainforge.llm.openai_compatible_client import OpenAICompatibleClient
+        client = OpenAICompatibleClient(
+            api_key=key, base_url=url, model=OPENAI_COMPAT_DEFAULT_MODEL
+        )
+    setattr(config, _LLM_CACHE_KEY, client)
+    return client
 
-    return OpenAICompatibleClient(
-        api_key=key, base_url=url, model=OPENAI_COMPAT_DEFAULT_MODEL
-    )
+
+def _scenarios_dir_abs(config: pytest.Config) -> Path:
+    _, raw = _resolve_config(config)
+    return (Path(config.rootpath) / raw).resolve()
 
 
-def test_trainforge_scenario(
-    trainforge_scenario: Scenario,
-    trainforge_agent_callable: Any,
-    trainforge_llm,
-) -> None:
-    """Run one TrainForge scenario as a pytest case.
+def pytest_collect_file(
+    file_path: Path, parent: pytest.Collector
+) -> pytest.Collector | None:
+    """Collect scenario JSON files inside the configured scenarios dir.
 
-    A scenario passes when every run ends in ``ScenarioStatus.PASS``.
-    Failure diagnostics include the scenario id, status counts, and the
-    first failing turn's detail string.
+    Anything outside the configured directory (e.g. fixtures elsewhere
+    in the project that happen to be JSON) is ignored.
     """
-    transport = InProcessTransport(agent=trainforge_agent_callable)
-    runner = ScenarioRunner(agent=transport, llm=trainforge_llm)
-    result = asyncio.run(runner.run_scenario(trainforge_scenario, runs=1))
+    if file_path.suffix != ".json":
+        return None
+    try:
+        scenarios_dir = _scenarios_dir_abs(parent.config)
+    except Exception:
+        return None
+    if not scenarios_dir.exists():
+        return None
+    resolved = file_path.resolve()
+    try:
+        resolved.relative_to(scenarios_dir)
+    except ValueError:
+        return None
+    return TrainForgeScenarioFile.from_parent(parent, path=file_path)
 
-    statuses = [r.status for r in result.runs]
-    if all(s == ScenarioStatus.PASS for s in statuses):
-        return
 
-    # Build a helpful failure message.
-    failures: list[str] = []
-    for run in result.runs:
-        for turn in run.turns:
-            if turn.exact_match is False:
-                failures.append(
-                    f"turn {turn.turn_index}: exact-match failed (got {turn.actual_response!r})"
-                )
-            for tc in turn.tool_calls:
-                if tc.status != "pass":
+class TrainForgeScenarioFile(pytest.File):
+    """One scenario JSON file = one collected file = N pytest items."""
+
+    def collect(self):
+        try:
+            file = load_scenarios(str(self.path))
+        except (MalformedScenarioError, UnsupportedScenarioVersionError) as exc:
+            # Loud collection failure rather than silently dropping a
+            # broken scenario — a typo silently skipping a test is
+            # exactly what regression testing is supposed to prevent.
+            raise pytest.UsageError(
+                f"invalid TrainForge scenario file {self.path}: {exc}"
+            ) from exc
+        for scenario in file.scenarios:
+            yield TrainForgeScenarioItem.from_parent(
+                parent=self, name=scenario.id, scenario=scenario
+            )
+
+
+class TrainForgeScenarioItem(pytest.Item):
+    def __init__(self, *, scenario: Scenario, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.scenario = scenario
+
+    def runtest(self) -> None:
+        agent = _resolve_agent_once(self.config)
+        if agent is None:
+            pytest.skip(
+                "no --trainforge-agent configured; pass "
+                "--trainforge-agent module:callable or set trainforge_agent in pytest config"
+            )
+        llm = _resolve_llm_once(self.config)
+
+        transport = InProcessTransport(agent=agent)
+        runner = ScenarioRunner(agent=transport, llm=llm)
+        result = asyncio.run(runner.run_scenario(self.scenario, runs=1))
+
+        statuses = [r.status for r in result.runs]
+        if all(s == ScenarioStatus.PASS for s in statuses):
+            return
+
+        failures: list[str] = self._format_failures(result)
+        detail = "\n  ".join(failures) if failures else "no per-turn diagnostics"
+        pytest.fail(
+            f"trainforge scenario {self.scenario.id} failed "
+            f"(statuses={statuses}):\n  {detail}"
+        )
+
+    def _format_failures(self, result) -> list[str]:
+        failures: list[str] = []
+        for run in result.runs:
+            for turn in run.turns:
+                if turn.exact_match is False:
                     failures.append(
-                        f"turn {turn.turn_index} tool[{tc.position}]: "
-                        f"{tc.status} expected={tc.expected_name!r} got={tc.actual_name!r}"
+                        f"turn {turn.turn_index}: exact-match failed "
+                        f"(got {turn.actual_response!r})"
                     )
-            for check in turn.checks:
+                for tc in turn.tool_calls:
+                    if tc.status != "pass":
+                        failures.append(
+                            f"turn {turn.turn_index} tool[{tc.position}]: "
+                            f"{tc.status} expected={tc.expected_name!r} "
+                            f"got={tc.actual_name!r}"
+                        )
+                for check in turn.checks:
+                    if not check.passed:
+                        failures.append(
+                            f"turn {turn.turn_index} check: {check.check!r} failed"
+                        )
+                for na in turn.node_assertion_results:
+                    if not na.passed:
+                        failures.append(
+                            f"turn {turn.turn_index} node: {na.explanation}"
+                        )
+            for check in run.outcome.checks:
                 if not check.passed:
-                    failures.append(f"turn {turn.turn_index} check: {check.check!r} failed")
-            for na in turn.node_assertion_results:
-                if not na.passed:
-                    failures.append(f"turn {turn.turn_index} node: {na.explanation}")
-        for check in run.outcome.checks:
-            if not check.passed:
-                failures.append(f"outcome: {check.check!r} failed")
+                    failures.append(f"outcome: {check.check!r} failed")
+        return failures
 
-    detail = "\n  ".join(failures) if failures else "no per-turn diagnostics"
-    pytest.fail(
-        f"trainforge scenario {trainforge_scenario.id} failed "
-        f"(statuses={statuses}):\n  {detail}"
-    )
+    def reportinfo(self) -> tuple[Path, int, str]:
+        return self.path, 0, f"trainforge scenario: {self.scenario.id}"
