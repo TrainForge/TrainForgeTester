@@ -15,6 +15,7 @@ Failure modes are mapped to the same error classes as the HTTP transport:
 from __future__ import annotations
 
 import asyncio
+import copy
 import inspect
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Union
@@ -76,11 +77,15 @@ class InProcessTransport:
         return parse_reply(data, source=self.source)
 
     async def _invoke(self, messages: list[Message]) -> Any:
-        # Pass a defensive copy so the user's callable can mutate without
-        # corrupting the runner's history.
+        # Deep-copy so the user's callable can mutate messages OR any of
+        # the nested dicts/lists (e.g., `messages[0]["content"] = ...`)
+        # without corrupting the runner's golden/actual histories.
+        # Shallow copying the outer list would still alias the inner
+        # dicts; deep copy is the only safe answer.
+        defensive = copy.deepcopy(messages)
         if inspect.iscoroutinefunction(self.agent):
-            return await self.agent(list(messages))
-        result = await asyncio.to_thread(self.agent, list(messages))
+            return await self.agent(defensive)
+        result = await asyncio.to_thread(self.agent, defensive)
         # If a sync callable accidentally returns a coroutine (e.g., user
         # wrote `def agent(...): return async_thing(...)`), await it.
         if inspect.iscoroutine(result):

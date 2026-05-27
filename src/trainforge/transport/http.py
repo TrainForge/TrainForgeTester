@@ -60,7 +60,11 @@ class HttpTransport:
         except httpx.RequestError as exc:
             raise AgentUnreachableError(str(exc)) from exc
 
-        if response.status_code >= 400:
+        # Non-2xx is an error per spec. httpx.AsyncClient does NOT follow
+        # redirects by default, so 3xx responses would otherwise leak
+        # through to the JSON-parse path with a confusing "non-JSON body"
+        # error. Use `is_success` (== 2xx) instead of a `>= 400` check.
+        if not response.is_success:
             raise AgentError(
                 f"agent at {self.url} returned HTTP {response.status_code}: {response.text[:200]}"
             )

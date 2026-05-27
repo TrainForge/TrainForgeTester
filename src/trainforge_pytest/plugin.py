@@ -127,20 +127,26 @@ def pytest_generate_tests(metafunc: pytest.Metafunc) -> None:
 
 @pytest.fixture(scope="session")
 def trainforge_llm():
-    """Lazy LLM client. Tests using only exact-match scenarios with no
-    custom checks and no outcome_checks won't actually call the LLM, but
-    we still need to hand the runner a client object.
+    """LLM client for the pytest plugin.
+
+    If ``OPENAI_API_KEY`` and ``OPENAI_API_URL`` are set, returns a real
+    OpenAI-compatible client. Otherwise returns
+    :class:`~trainforge.llm.base.LazyMissingLLMClient`: deterministic
+    scenarios (exact-match, no custom turn checks, no outcome_checks)
+    still run, and only LLM-dependent scenarios fail with a clear
+    "missing credentials" error when the judge is actually invoked.
     """
-    from trainforge.llm.openai_compatible_client import OpenAICompatibleClient
     import os
+
+    from trainforge.llm.base import LazyMissingLLMClient
 
     key = os.environ.get("OPENAI_API_KEY")
     url = os.environ.get("OPENAI_API_URL")
     if not key or not url:
-        pytest.skip(
-            "trainforge scenarios need OPENAI_API_KEY + OPENAI_API_URL "
-            "(any OpenAI-compatible endpoint)"
-        )
+        return LazyMissingLLMClient()
+
+    from trainforge.llm.openai_compatible_client import OpenAICompatibleClient
+
     return OpenAICompatibleClient(
         api_key=key, base_url=url, model=OPENAI_COMPAT_DEFAULT_MODEL
     )

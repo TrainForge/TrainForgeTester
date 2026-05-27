@@ -29,6 +29,7 @@ TrainForge 0.1 deterministic-first model:
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import uuid
 from dataclasses import dataclass
@@ -186,7 +187,9 @@ class ScenarioRunner:
             turn_results.append(turn_result)
             if on_turn_complete is not None:
                 maybe_awaitable = on_turn_complete()
-                if asyncio.iscoroutine(maybe_awaitable):
+                # Accept any Awaitable, not just coroutines — callers may
+                # return asyncio.Task / asyncio.Future from a sync hook.
+                if inspect.isawaitable(maybe_awaitable):
                     await maybe_awaitable
 
             # Golden injection: future turns see the GOLDEN text response.
@@ -327,17 +330,25 @@ class ScenarioRunner:
 
         # ---- DETERMINISTIC PATH: exact text match ----------------------
         if not agent_turn.may_diverge:
-            # Most exact-match turns are pure Python equality. Wrap in
-            # to_thread anyway: if the scenario declares custom checks,
-            # _evaluate_exact_match will call the LLM, and we don't want
-            # to block the event loop while it runs.
-            result = await asyncio.to_thread(
-                self._evaluate_exact_match,
-                base=base,
-                agent_turn=agent_turn,
-                user_turn=user_turn,
-                actual_text=actual_text,
-            )
+            # The exact-match path is pure Python equality UNLESS the
+            # scenario declares custom checks (which call the LLM). Only
+            # pay the to_thread scheduling overhead when an LLM call is
+            # actually possible; otherwise evaluate inline.
+            if agent_turn.checks:
+                result = await asyncio.to_thread(
+                    self._evaluate_exact_match,
+                    base=base,
+                    agent_turn=agent_turn,
+                    user_turn=user_turn,
+                    actual_text=actual_text,
+                )
+            else:
+                result = self._evaluate_exact_match(
+                    base=base,
+                    agent_turn=agent_turn,
+                    user_turn=user_turn,
+                    actual_text=actual_text,
+                )
             return result.model_copy(update={"node_assertion_results": node_results})
 
         # ---- LLM PATH: 20 standard NLP checks + custom checks ----------

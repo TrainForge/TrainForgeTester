@@ -100,8 +100,8 @@ async def test_factory_pattern_callable_of_callable() -> None:
     assert reply.text == "from factory"
 
 
-async def test_defensive_message_copy() -> None:
-    """The user's callable mutating its messages arg must not corrupt the runner."""
+async def test_defensive_message_copy_outer_list() -> None:
+    """The user's callable mutating the messages list must not corrupt the runner."""
     sent = [_user("hi")]
 
     async def agent(messages):
@@ -111,3 +111,37 @@ async def test_defensive_message_copy() -> None:
     await InProcessTransport(agent=agent).chat(sent)
     # Original list unchanged.
     assert len(sent) == 1
+
+
+async def test_defensive_message_copy_inner_dict() -> None:
+    """The user's callable mutating an individual message dict must not corrupt the runner.
+
+    Shallow ``list(messages)`` would still alias the inner dicts; this
+    test pins the deep-copy behavior.
+    """
+    sent: list[Message] = [_user("hi")]
+
+    async def agent(messages):
+        messages[0]["content"] = "HACKED"
+        return {"response": "ok"}
+
+    await InProcessTransport(agent=agent).chat(sent)
+    assert sent[0]["content"] == "hi"
+
+
+async def test_defensive_message_copy_nested_list() -> None:
+    """The user's callable mutating a nested list (e.g. tool_calls) must not corrupt the runner."""
+    sent: list[Message] = [
+        {
+            "role": Role.AGENT,
+            "content": None,
+            "tool_calls": [{"id": "c1", "name": "lookup", "arguments": {"q": "x"}}],
+        }
+    ]
+
+    async def agent(messages):
+        messages[0]["tool_calls"].append({"id": "c2", "name": "evil", "arguments": {}})
+        return {"response": "ok"}
+
+    await InProcessTransport(agent=agent).chat(sent)
+    assert len(sent[0]["tool_calls"]) == 1

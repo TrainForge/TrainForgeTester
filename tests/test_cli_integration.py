@@ -362,20 +362,18 @@ def test_diff_end_to_end(
 # ---------------------------------------------------------------------------
 
 
-def test_run_without_api_key_and_without_factory_errors_only_when_llm_actually_needed(
-    small_scenarios_path: Path, tmp_path: Path, monkeypatch
+def test_run_without_llm_credentials_triggers_lazy_error_when_judge_needed(
+    small_scenarios_path: Path, tmp_path: Path, monkeypatch, golden_server
 ) -> None:
-    """Without LLM credentials, scenarios that DO need the judge (custom
-    checks, may_diverge=True, outcome_checks) raise a clear error when
-    the judge is first called. Scenarios that don't need the judge run
-    without complaint.
+    """With no LLM creds AND a scenario that needs the judge, the run
+    must reach the lazy-stub error path and surface a clear message.
 
-    The small fixture has custom checks per turn and outcome_checks, so
-    it will trigger the LazyMissingLLMClient when the runner reaches an
-    LLM-using path — surfaced as a non-zero exit with the LLM keys
-    mentioned. We also expect the agent-unreachable error first since
-    the URL is fake; the test asserts the run fails (the exact failure
-    mode depends on whether unreachable or LLM-missing fires first).
+    Uses the mock-agent (which always returns the golden response) so
+    the run deterministically gets past tool/agent calls and arrives at
+    the first LLM-using evaluation (custom checks + outcome_checks in
+    the small fixture). That's the only way to prove
+    :class:`~trainforge.llm.base.LazyMissingLLMClient` is actually
+    exercised — an unreachable URL would error before any LLM call.
     """
     monkeypatch.setattr(cli_module, "_LLM_CLIENT_FACTORY", None)
     monkeypatch.setattr(cli_module, "find_dotenv", lambda usecwd=True: "")
@@ -390,12 +388,85 @@ def test_run_without_api_key_and_without_factory_errors_only_when_llm_actually_n
             "--scenarios",
             str(small_scenarios_path),
             "--agent-url",
-            "http://127.0.0.1:1/unreachable",
+            golden_server.url,
             "--output",
             str(tmp_path / "r.json"),
         ],
     )
     assert result.exit_code != 0
+    # The LazyMissingLLMClient message mentions both env var names so
+    # users know exactly which knob to turn.
+    assert "OPENAI_API_KEY" in result.output
+    assert "OPENAI_API_URL" in result.output
+
+
+def test_run_without_llm_credentials_succeeds_on_no_judge_scenario(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The flip side: a scenario with no may_diverge=True, no custom
+    checks, and no outcome_checks runs to completion without an LLM
+    client. This is the hackathon-quickstart path."""
+    monkeypatch.setattr(cli_module, "_LLM_CLIENT_FACTORY", None)
+    monkeypatch.setattr(cli_module, "find_dotenv", lambda usecwd=True: "")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_URL", raising=False)
+
+    # Minimal scenario: one user turn, one agent turn, exact match,
+    # no outcome_checks.
+    scenarios_path = tmp_path / "no_llm.json"
+    scenarios_path.write_text(
+        json.dumps(
+            {
+                "version": "2.0",
+                "scenarios": [
+                    {
+                        "id": "sc-no-llm-1",
+                        "name": "no-llm",
+                        "turns": [
+                            {"role": "user", "message": "ping"},
+                            {"role": "agent", "golden_response": "pong"},
+                        ],
+                        "expected_outcome": "ack",
+                        "outcome_checks": [],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    # An in-process agent function that returns the exact golden reply.
+    import types
+
+    mod_name = "_trainforge_test_no_llm_agent"
+    mod = types.ModuleType(mod_name)
+
+    async def run(messages):
+        return {"response": "pong"}
+
+    mod.run = run
+    import sys
+
+    sys.modules[mod_name] = mod
+    try:
+        runner = CliRunner()
+        result = runner.invoke(
+            cli,
+            [
+                "run",
+                "--scenarios",
+                str(scenarios_path),
+                "--agent",
+                f"{mod_name}:run",
+                "--output",
+                str(tmp_path / "r.json"),
+            ],
+        )
+    finally:
+        sys.modules.pop(mod_name, None)
+
+    assert result.exit_code == 0, result.output
+    assert "1/1 passed" in result.output
 
 
 # ---------------------------------------------------------------------------

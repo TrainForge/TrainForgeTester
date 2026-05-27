@@ -26,7 +26,11 @@ from trainforge.agent_resolver import AgentResolutionError, resolve_in_process_a
 from trainforge.config import override_scope
 from trainforge.diff import compute_diff
 from trainforge.errors import MalformedScenarioError, UnsupportedScenarioVersionError
-from trainforge.llm.base import LLMClient, OPENAI_COMPAT_DEFAULT_MODEL
+from trainforge.llm.base import (
+    LLMClient,
+    MissingLLMCredentialsError,
+    OPENAI_COMPAT_DEFAULT_MODEL,
+)
 from trainforge.mock_agent import MODES as MOCK_MODES, MockAgentServer
 from trainforge.report import render_diff_html, render_report_html
 from trainforge.results import build_run_results, write_results
@@ -246,16 +250,22 @@ def run_cmd(
             bar.update(1)
 
         with override_scope(model=override_model, prompt=override_prompt):
-            scenario_results = asyncio.run(
-                _run_all_scenarios(
-                    runner=runner,
-                    scenarios=scenarios,
-                    runs=runs,
-                    parallel=parallel,
-                    on_turn_complete=_tick,
-                    bar=bar,
+            try:
+                scenario_results = asyncio.run(
+                    _run_all_scenarios(
+                        runner=runner,
+                        scenarios=scenarios,
+                        runs=runs,
+                        parallel=parallel,
+                        on_turn_complete=_tick,
+                        bar=bar,
+                    )
                 )
-            )
+            except MissingLLMCredentialsError as exc:
+                # The lazy stub fired because a scenario actually needed
+                # the judge. Surface as a Click error so the user sees a
+                # clean one-line message, not a stack trace.
+                raise click.ClickException(str(exc)) from exc
 
     click.echo("")
     for sc, result in zip(scenarios, scenario_results):
@@ -516,30 +526,6 @@ def mock_agent_cmd(scenarios_path: str, port: int, host: str, mode: str) -> None
 # ---------------------------------------------------------------------------
 
 
-class _LazyMissingLLMClient:
-    """LLM client stub used when the user didn't configure a real client.
-
-    Construction always succeeds so deterministic scenarios (no
-    ``may_diverge``, no per-turn custom checks, no ``outcome_checks``)
-    run without needing an LLM at all. The error is deferred to the first
-    actual ``.complete()`` call, where the message tells the user exactly
-    which flag/env to set.
-    """
-
-    model: str
-
-    def __init__(self, model: str) -> None:
-        self.model = model
-
-    def complete(self, system: str, user: str) -> str:  # pragma: no cover - error path
-        raise click.ClickException(
-            "this scenario needs an LLM judge but none is configured. "
-            "Pass --llm-api-key + --llm-api-url, or set $OPENAI_API_KEY + "
-            "$OPENAI_API_URL. Scenarios with may_diverge=True, custom turn "
-            "checks, or outcome_checks all trigger the judge."
-        )
-
-
 def _build_llm_client(
     *,
     llm_api_url: str | None,
@@ -556,7 +542,9 @@ def _build_llm_client(
     if not key or not base_url:
         # Defer: scenarios that don't need a judge will run fine; ones
         # that do will see a helpful error from the stub on first call.
-        return _LazyMissingLLMClient(model=model)
+        from trainforge.llm.base import LazyMissingLLMClient
+
+        return LazyMissingLLMClient(model=model)
 
     from trainforge.llm.openai_compatible_client import OpenAICompatibleClient
 
