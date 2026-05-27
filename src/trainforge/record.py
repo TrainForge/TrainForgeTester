@@ -8,20 +8,20 @@ for the few things only they can answer (``may_diverge`` per turn,
 ``expected_outcome``, ``outcome_checks``) and a valid scenario JSON is
 written to disk.
 
-Built on stdlib ``cmd.Cmd`` so there's no terminal-UX dependency. Single
-greedy multi-line input is read via ``input()`` after each prompt; tool
-calls are displayed inline so the user sees exactly what the agent did.
+Implemented as a lightweight ``input()`` prompt loop so there's no
+terminal-UX dependency. Single-line input is read after each prompt;
+tool calls are displayed inline so the user sees exactly what the
+agent did.
 """
 from __future__ import annotations
 
 import asyncio
 import json
-import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from trainforge.transport import AgentReply, InProcessTransport, Message, Role
+from trainforge.transport import InProcessTransport, Message, Role
 
 
 @dataclass

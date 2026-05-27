@@ -177,7 +177,22 @@ class NodeAssertion(_StrictModel):
     """Optional literal-equality check on args passed to ``observer.node``.
     When set, each key/value in the dict must equal the corresponding key
     in the observed call's args. Extra keys in observed args are allowed
-    (permissive, same rule as tool arguments_schema)."""
+    (permissive, same rule as tool arguments_schema).
+
+    Only valid when ``must_fire=True``. The negative-assertion semantics
+    for "must NOT fire with these specific args" are ambiguous, so the
+    combination is rejected at validation time rather than silently
+    misbehaving."""
+
+    @field_validator("args_match", mode="after")
+    @classmethod
+    def _args_match_requires_must_fire(cls, v, info):
+        if v is not None and info.data.get("must_fire") is False:
+            raise ValueError(
+                "args_match is only valid when must_fire=True; "
+                "to assert a node does NOT fire, use must_fire=False without args_match"
+            )
+        return v
 
 
 class AgentTurn(_StrictModel):
