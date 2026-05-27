@@ -445,6 +445,52 @@ async def _run_all_scenarios(
 
 
 # ---------------------------------------------------------------------------
+# trainforge record (capture mode)
+# ---------------------------------------------------------------------------
+
+
+@cli.command("record")
+@click.option(
+    "--agent",
+    "agent_spec",
+    required=True,
+    help="In-process agent spec, uvicorn-style: 'module:callable' or 'module:factory()'.",
+)
+@click.option(
+    "--output",
+    "output_path",
+    required=True,
+    type=click.Path(dir_okay=False),
+    help="Path to write the captured scenario JSON.",
+)
+@click.option(
+    "--timeout",
+    "timeout_seconds",
+    type=click.FloatRange(min=1.0),
+    default=30.0,
+    show_default=True,
+    help="Per-turn agent timeout in seconds.",
+)
+def record_cmd(agent_spec: str, output_path: str, timeout_seconds: float) -> None:
+    """Capture mode: chat with your agent, write a scenario file."""
+    try:
+        callable_ = resolve_in_process_agent(agent_spec)
+    except AgentResolutionError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    from trainforge.record import run_record_loop
+
+    exit_code = run_record_loop(
+        agent_callable=callable_,
+        agent_spec=agent_spec,
+        output_path=output_path,
+        timeout_seconds=timeout_seconds,
+    )
+    if exit_code != 0:
+        sys.exit(exit_code)
+
+
+# ---------------------------------------------------------------------------
 # trainforge mock-agent
 # ---------------------------------------------------------------------------
 
@@ -470,6 +516,30 @@ def mock_agent_cmd(scenarios_path: str, port: int, host: str, mode: str) -> None
 # ---------------------------------------------------------------------------
 
 
+class _LazyMissingLLMClient:
+    """LLM client stub used when the user didn't configure a real client.
+
+    Construction always succeeds so deterministic scenarios (no
+    ``may_diverge``, no per-turn custom checks, no ``outcome_checks``)
+    run without needing an LLM at all. The error is deferred to the first
+    actual ``.complete()`` call, where the message tells the user exactly
+    which flag/env to set.
+    """
+
+    model: str
+
+    def __init__(self, model: str) -> None:
+        self.model = model
+
+    def complete(self, system: str, user: str) -> str:  # pragma: no cover - error path
+        raise click.ClickException(
+            "this scenario needs an LLM judge but none is configured. "
+            "Pass --llm-api-key + --llm-api-url, or set $OPENAI_API_KEY + "
+            "$OPENAI_API_URL. Scenarios with may_diverge=True, custom turn "
+            "checks, or outcome_checks all trigger the judge."
+        )
+
+
 def _build_llm_client(
     *,
     llm_api_url: str | None,
@@ -481,16 +551,12 @@ def _build_llm_client(
         return factory(api_key=llm_api_key, model=model)
 
     key = _resolve_llm_api_key(llm_api_key)
-    if not key:
-        raise click.ClickException(
-            "missing LLM API key; pass --llm-api-key or set $OPENAI_API_KEY"
-        )
-
     base_url = _resolve_llm_api_url(llm_api_url)
-    if not base_url:
-        raise click.ClickException(
-            "missing LLM API URL; pass --llm-api-url or set $OPENAI_API_URL"
-        )
+
+    if not key or not base_url:
+        # Defer: scenarios that don't need a judge will run fine; ones
+        # that do will see a helpful error from the stub on first call.
+        return _LazyMissingLLMClient(model=model)
 
     from trainforge.llm.openai_compatible_client import OpenAICompatibleClient
 

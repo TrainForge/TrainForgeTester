@@ -15,7 +15,9 @@ The returned value is suitable to hand to
 from __future__ import annotations
 
 import importlib
+import os
 import re
+import sys
 from typing import Any
 
 _SPEC_RE = re.compile(
@@ -55,6 +57,13 @@ def resolve_in_process_agent(spec: str) -> Any:
     module_name = match.group("module")
     attr_path = match.group("attr")
     is_factory = match.group("call") is not None
+
+    # uvicorn / gunicorn precedent: add CWD to sys.path so a user can run
+    # `trainforge run --agent my_module:fn` from their project root even
+    # when `my_module.py` isn't part of an installed package.
+    cwd = os.getcwd()
+    if cwd not in sys.path:
+        sys.path.insert(0, cwd)
 
     try:
         module = importlib.import_module(module_name)

@@ -31,22 +31,30 @@ def test_resolve_llm_env(monkeypatch) -> None:
     assert _resolve_llm_api_url(None) == "https://api.example/v1"
 
 
-def test_build_llm_client_requires_url_and_key(monkeypatch) -> None:
+def test_build_llm_client_lazy_when_no_credentials(monkeypatch) -> None:
+    """No keys → return a stub that lets deterministic scenarios run.
+    The error is deferred to first ``.complete()`` so users can run
+    scenarios that don't need the judge without configuring an LLM.
+    """
     monkeypatch.setattr(cli_module, "_LLM_CLIENT_FACTORY", None)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_API_URL", raising=False)
 
+    client = _build_llm_client(llm_api_url=None, llm_api_key=None, model="m")
+    # Construction succeeds; calling complete() is what raises.
+    assert client.model == "m"
     with pytest.raises(Exception):
-        _build_llm_client(llm_api_url=None, llm_api_key=None, model="m")
+        client.complete("sys", "user")
 
 
-def test_build_llm_client_requires_url_when_key_present(monkeypatch) -> None:
+def test_build_llm_client_lazy_when_only_key_present(monkeypatch) -> None:
     monkeypatch.setattr(cli_module, "_LLM_CLIENT_FACTORY", None)
     monkeypatch.setenv("OPENAI_API_KEY", "k")
     monkeypatch.delenv("OPENAI_API_URL", raising=False)
 
+    client = _build_llm_client(llm_api_url=None, llm_api_key=None, model="m")
     with pytest.raises(Exception):
-        _build_llm_client(llm_api_url=None, llm_api_key=None, model="m")
+        client.complete("sys", "user")
 
 
 def test_build_llm_client_uses_factory(monkeypatch) -> None:

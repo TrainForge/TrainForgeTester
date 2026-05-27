@@ -51,9 +51,42 @@ pip install -e ".[dev]"
 
 This installs the `trainforge` console script.
 
-## Quickstart: run the example scenario against the mock agent
+## Quickstart: 60 seconds against an in-process Python agent
 
-The repo ships with the restaurant-booking scenario from the spec under [`scenarios/example_restaurant_booking.json`](scenarios/example_restaurant_booking.json), and a built-in mock agent server.
+The fastest way in is to point TrainForge at a Python callable. No HTTP server, no LLM key needed for deterministic scenarios.
+
+```bash
+# Run the bundled toy agent against the bundled scenario.
+trainforge run \
+  --agent examples.quickstart.agent:run \
+  --scenarios examples/quickstart/scenarios/hello.json \
+  --output results.json
+
+# You should see: 1/1 passed (100%)
+
+# Now demonstrate regression detection — same scenario, different "model":
+trainforge run \
+  --agent examples.quickstart.agent:run \
+  --scenarios examples/quickstart/scenarios/hello.json \
+  --output results-changed.json \
+  --override-model claude-sonnet-4-7
+
+trainforge diff \
+  --before results.json \
+  --after results-changed.json \
+  --output regression.html
+
+# regressed=1 — the agent's reply changed under the new model.
+open regression.html
+```
+
+See [`examples/quickstart/README.md`](examples/quickstart/README.md) for the full walkthrough, including capture mode (`trainforge record`) and the pytest plugin (`pip install "trainforge[pytest]"`).
+
+To test your own agent: replace `examples.quickstart.agent:run` with `your_module:your_function`. The callable signature is `async def run(messages: list[dict]) -> dict` returning `{"response": "...", "tool_calls": [...]}` (same shape as the HTTP contract). Sync callables are accepted and wrapped via `asyncio.to_thread`.
+
+## Quickstart: run the example scenario against the mock HTTP agent
+
+For agents already running as an HTTP service, the original mock-agent flow still works.
 
 ```bash
 # Terminal 1 - mock agent returns the golden responses verbatim
