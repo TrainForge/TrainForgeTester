@@ -112,6 +112,15 @@ class ScenarioRunner:
 
     agent: Transport
     llm: LLMClient
+    no_judge: bool = False
+    """When ``True``, skip every LLM-dependent evaluation. Per-turn
+    custom checks, the 20 standard NLP-consistency checks, and outcome
+    checks are all emitted with ``pending=True`` instead of a real
+    verdict. The runner still drives the agent, captures actual vs
+    golden, and evaluates tool calls deterministically. The coding
+    agent (or any downstream labeler) is expected to read the
+    resulting ``results.json``, fill in the pending verdicts, and run
+    ``trainforge rescore`` for the deterministic summary."""
 
     async def run_scenario(
         self,
@@ -411,6 +420,11 @@ class ScenarioRunner:
     ) -> list[CheckResult]:
         if not agent_turn.checks:
             return []
+        if self.no_judge:
+            return [
+                CheckResult(check=c, passed=False, pending=True, explanation="pending: no-judge mode")
+                for c in agent_turn.checks
+            ]
         try:
             turn_eval = evaluate_turn(
                 self.llm,
@@ -446,6 +460,38 @@ class ScenarioRunner:
         custom checks into ONE batched call. Splits the result back into
         the two buckets by index.
         """
+        if self.no_judge:
+            return TurnResult(
+                turn_index=turn_index,
+                user_message=user_turn.message,
+                golden_response=agent_turn.golden_response,
+                actual_response=actual_text,
+                may_diverge=True,
+                divergence_note=agent_turn.divergence_note,
+                tool_calls=base.tool_calls,
+                status=TurnStatus.EVALUATED,
+                exact_match=None,
+                standard_check_results=[
+                    StandardCheckResult(
+                        id=c.id,
+                        question=c.question,
+                        passed=False,
+                        pending=True,
+                        explanation="pending: no-judge mode",
+                    )
+                    for c in STANDARD_CHECKS
+                ],
+                checks=[
+                    CheckResult(
+                        check=c,
+                        passed=False,
+                        pending=True,
+                        explanation="pending: no-judge mode",
+                    )
+                    for c in agent_turn.checks
+                ],
+            )
+
         standard_questions = [c.question for c in STANDARD_CHECKS]
         custom_questions = list(agent_turn.checks)
         questions = standard_questions + custom_questions
@@ -646,6 +692,20 @@ class ScenarioRunner:
     ) -> OutcomeResult:
         if not scenario.outcome_checks:
             return OutcomeResult(status=OutcomeStatus.EVALUATED, checks=[])
+
+        if self.no_judge:
+            return OutcomeResult(
+                status=OutcomeStatus.EVALUATED,
+                checks=[
+                    CheckResult(
+                        check=c,
+                        passed=False,
+                        pending=True,
+                        explanation="pending: no-judge mode",
+                    )
+                    for c in scenario.outcome_checks
+                ],
+            )
 
         try:
             outcome: OutcomeEval = await asyncio.to_thread(

@@ -1,11 +1,14 @@
 ---
 name: trainforge-test-gen
 description: |
-  Turn one manual conversation with your AI agent into a TrainForge regression
-  scenario. You did the manual test once. This skill captures it as a deterministic
-  test you can re-run on every prompt or model change. Invoke when the user says
-  "test my agent", "turn this into a regression test", "generate a scenario from
-  this transcript", or pastes a chat with their agent and asks how to test it.
+  Turn one good conversation with your AI agent into a TrainForge regression
+  test in 5 seconds. Auto-mode captures the conversation and infers sensible
+  defaults; you (the coding agent) then label the pending LLM-dependent checks
+  using the 20-NLP-consistency rubric so the user never needs to configure an
+  Anthropic / OpenAI key. Invoke when the user says "test my agent", "turn
+  this into a regression test", "generate a scenario from this transcript",
+  pastes a chat with their agent and asks how to test it, or wants to verify
+  the agent still produces the right result after a change.
 ---
 
 # TrainForge Test Generator
@@ -36,8 +39,10 @@ After every change to:
 - tool implementations the agent calls
 
 run `trainforge run` for every scenario file in `scenarios/` (the CLI takes
-one scenarios JSON file per invocation; do not pass a directory). For a
-typical layout where every scenario lives in its own file:
+one scenarios JSON file per invocation; do not pass a directory).
+**Default to `--no-judge`** and label the pending checks yourself
+(see "Coding-agent-as-judge" below). For a typical layout where every
+scenario lives in its own file:
 
 ```
 for f in scenarios/*.json; do
@@ -46,7 +51,12 @@ for f in scenarios/*.json; do
   trainforge run \
     --scenarios "$f" \
     --agent <user's module:callable OR fallback to --agent-url> \
-    --output "results-$base.json"
+    --output "results-$base.json" \
+    --no-judge
+
+  # YOU now read results-$base.json, label every pending check (per
+  # the 20-NLP rubric below), save the file, then:
+  trainforge rescore --results "results-$base.json"
 done
 ```
 
@@ -62,12 +72,40 @@ Pick the transport:
 
 Mutually exclusive — pass exactly one.
 
-`trainforge run` also requires LLM access for the per-scenario outcome check
-and any `may_diverge: true` turns. Either set `OPENAI_API_KEY` and
-`OPENAI_API_URL` in the environment (the runner reads them automatically)
-or add `--llm-api-key <key> --llm-api-url <url>` to the command. The CLI
-errors with `missing LLM API key` / `missing LLM API URL` if neither is
-present, even when every turn is exact-match.
+### LLM judge: prefer YOU over a configured API key
+
+`trainforge run` normally needs LLM access for the per-scenario
+outcome check and any `may_diverge: true` turns. There are two paths:
+
+**Default path (no LLM credentials configured): use the `--no-judge` flow.**
+
+The user is already paying for you (Claude / Cursor / whatever coding
+agent they're running). Reuse that. Don't ask them to configure an
+Anthropic / OpenAI key just to grade tests.
+
+Append `--no-judge` to every `trainforge run` call you make:
+
+```
+trainforge run \
+  --scenarios "$f" \
+  --agent <user's module:callable OR --agent-url ...> \
+  --output "results-$base.json" \
+  --no-judge
+```
+
+The runner will execute the agent, capture actual vs golden, and
+evaluate tool calls deterministically. Every LLM-dependent check
+(custom turn checks, the 20 standard NLP-consistency checks, outcome
+checks) is emitted with `pending: true` and a placeholder
+`passed: false`. **YOU then label those pending checks** — see
+"Coding-agent-as-judge" below — and call `trainforge rescore` to get
+the deterministic summary.
+
+**Configured-key path (CI, batch testing, user opted in):** If
+`OPENAI_API_KEY` and `OPENAI_API_URL` are set in the environment, OR
+the user explicitly says "use the configured API key for judging,"
+drop `--no-judge` and let the runner make LLM calls itself. Same
+output shape, no labeling step needed. Use this for CI runs.
 
 If a previous results file exists for a scenario, follow up with:
 
@@ -101,6 +139,131 @@ This standing rule is the point of the skill. Generating one scenario from
 one transcript is a single use. The regression loop is what makes the
 agent get better instead of regressing silently.
 
+## Coding-agent-as-judge: how to label pending checks
+
+When you run with `--no-judge`, every LLM-dependent check in the
+output `results.json` carries `pending: true` plus a placeholder
+`passed: false`. Your job:
+
+1. Read `results.json`.
+2. For each pending check, apply the rubric below directly. **You are
+   the labeler, not the aggregator.** Set `passed: true | false`,
+   write a short `explanation`, and flip `pending: false`. Save the
+   file. Do not invent scenario-level verdicts; those come from
+   `trainforge rescore` in the next step.
+3. Call `trainforge rescore --results results.json`. This re-runs the
+   deterministic scoring pipeline (`classify_scenario_run` +
+   `summarize`) over your labels and produces the official per-scenario
+   pass/fail and the run summary.
+4. Surface the rescore summary to the user. If any scenarios failed,
+   name them and which turn failed.
+
+### The three kinds of pending check
+
+**1. Per-turn custom checks (`turn.checks[*]`).** The scenario author
+wrote a natural-language question about THIS turn. The check object
+looks like:
+
+```json
+{"check": "Response confirms the booking with a reference code",
+ "passed": false, "explanation": "", "pending": true}
+```
+
+Read the turn's `actual_response` (and `golden_response` for context).
+Decide: did the actual response satisfy the question? Set `passed`
+true/false and write a 1-line `explanation`.
+
+**2. Standard NLP-consistency checks (`turn.standard_check_results[*]`).**
+Only present on `may_diverge: true` turns. There are exactly 20 of
+these per turn, each with a stable `id`. Apply the rubric below to
+each one, comparing `actual_response` against `golden_response`.
+
+**3. Outcome checks (`run.outcome.checks[*]`).** Run once per scenario
+at the end. Look at the FULL conversation (the runner doesn't put it
+into the results file directly — reconstruct from per-turn
+`user_message` + `actual_response` + the original scenario's
+`expected_outcome`). Decide whether the agent achieved each binary
+outcome check.
+
+### The 20 NLP-consistency rubric
+
+For each `standard_check_results` entry, apply the rule below. Compare
+`actual_response` against `golden_response`. Return `passed: true` if
+the rule holds, `false` otherwise. Write a brief `explanation` only
+on failure.
+
+| `id` | Rule for `passed: true` |
+|---|---|
+| `same_language` | Both replies are in the same natural language. |
+| `same_speech_act` | Same speech act: statement / question / confirmation / request / promise / apology / refusal. |
+| `same_intent` | Same communicative intent. |
+| `same_action_state` | Same action state: not_started / pending / in_progress / completed / failed. |
+| `same_next_step` | Same next-step prompt for the user (or both omit one). |
+| `same_propositional_content` | Same set of factual claims. |
+| `no_added_facts` | Actual introduces no claims that aren't in golden. |
+| `no_omitted_facts` | Actual preserves every factual claim that's in golden. |
+| `no_contradictions` | Actual doesn't contradict any claim in golden. |
+| `same_named_entities` | Same people / places / products / orgs referenced. |
+| `same_numerics` | Numbers, dates, times, codes, IDs match. |
+| `same_call_to_action` | Both contain (or both omit) the same CTA. |
+| `same_disclosures` | Same disclosures / caveats / warnings. |
+| `comparable_register` | Same register: formal / casual / technical / consumer. |
+| `comparable_tone` | Same tone: polite / curt / empathetic / neutral / enthusiastic. |
+| `comparable_specificity` | Same specificity (concrete vs generic placeholders). |
+| `comparable_hedging` | Same confidence level (decisive vs tentative). |
+| `comparable_length` | Length within ~0.5× to 2× of golden. |
+| `same_persona` | Same voice / persona; neither breaks character. |
+| `same_information_order` | Same ordering of major information units. |
+
+Apply each rule independently. A single rule failing should produce
+`passed: false` for that one check only; the others may still pass.
+
+### Worked example
+
+`results.json` contains a turn like:
+
+```json
+{
+  "turn_index": 1,
+  "user_message": "What time?",
+  "golden_response": "How about 7pm?",
+  "actual_response": "7pm works for me",
+  "may_diverge": true,
+  "standard_check_results": [
+    {"id": "same_language", "question": "Same natural language.",
+     "passed": false, "explanation": "", "pending": true},
+    {"id": "same_speech_act", "question": "Same speech act...",
+     "passed": false, "explanation": "", "pending": true},
+    ...
+  ]
+}
+```
+
+You label:
+
+```json
+{"id": "same_language", "question": "Same natural language.",
+ "passed": true, "explanation": "", "pending": false}
+{"id": "same_speech_act", "question": "Same speech act...",
+ "passed": false,
+ "explanation": "golden asks a question; actual makes a confirmation",
+ "pending": false}
+...
+```
+
+After labeling, save the file and call `trainforge rescore`.
+
+### When NOT to use the labeling flow
+
+- The user explicitly set `OPENAI_API_KEY` / `OPENAI_API_URL` and said
+  "use the API key for judging." Drop `--no-judge`; the runner judges.
+- The user is running in CI without a coding agent in the loop. They
+  need a configured key.
+- The scenarios have **zero** LLM-dependent checks (all
+  `may_diverge: false`, no per-turn custom checks, no `outcome_checks`).
+  The runner produces a full verdict deterministically; no labeling
+  needed.
+
 ## What TrainForge needs to know
 
 TrainForge tests an agent in two ways:
@@ -121,6 +284,41 @@ the *few* questions only they can answer (which args are part of the
 contract, which turns can diverge, what the success outcome is).
 
 ## Workflow
+
+### The two capture paths
+
+Before walking the user through manual scenario generation, check
+which capture path fits:
+
+**Path A — user has a live in-process agent (Python callable):**
+prefer `trainforge record --auto`. One command, no questions, scenario
+file written in 5 seconds. Tell them:
+
+```bash
+trainforge record \
+  --agent <their module:callable> \
+  --output scenarios/<short-name>.json \
+  --auto
+```
+
+The REPL opens. They chat with their agent. They type `:save`. Done.
+The resulting JSON defaults to `may_diverge: true` on every turn (the
+20 NLP-consistency rubric will judge each), no outcome checks (they
+can add later by editing the JSON), auto-generated scenario id /
+name.
+
+This is the recommended default for any user who can `python -c
+"from their_module import their_agent"`. Drops first-capture friction
+from minutes to seconds.
+
+**Path B — user has a transcript already (or no live agent):**
+fall back to the manual generation workflow below (Steps 1-7). The
+user pastes a conversation, you walk through the questions, and the
+output is the same shape of scenario JSON.
+
+Pick the path before asking any questions. If the user has shown you
+their agent code or talked about a live callable, Path A. Otherwise
+Path B.
 
 ### Step 1: Get the transcript
 

@@ -272,7 +272,17 @@ class ScenariosFile(_StrictModel):
 class CheckResult(_StrictModel):
     check: str
     passed: bool
+    """``True`` if the LLM judged the check as passing, ``False`` otherwise.
+    When ``pending=True``, ``passed`` is a placeholder (``False``) — the
+    real verdict comes from a downstream consumer (e.g. the coding agent
+    that reads ``results.json`` after ``trainforge run --no-judge``)."""
     explanation: str = ""
+    pending: bool = False
+    """``True`` when the runner ran in ``--no-judge`` mode and skipped the
+    LLM evaluation for this check. Consumers (``trainforge report``,
+    diff tools, the test-gen skill) MUST treat pending checks as
+    "verdict deferred" and surface them clearly. Pending checks do not
+    count toward pass/fail in the runner summary."""
 
 
 class ToolCallStatus(StrEnum):
@@ -331,6 +341,11 @@ class StandardCheckResult(_StrictModel):
     """Verbatim text of the check (denormalized so reports are self-contained)."""
     passed: bool
     explanation: str = ""
+    pending: bool = False
+    """``True`` when the runner skipped LLM judging (``--no-judge``).
+    The coding agent (or any downstream labeler) is expected to read
+    this check, apply the rubric, and write back ``passed`` /
+    ``explanation`` / ``pending=False``."""
 
 
 class TurnResult(_StrictModel):
@@ -437,6 +452,12 @@ class RunSummary(_StrictModel):
     all may_diverge=True turns."""
     custom_check_failures: int = 0
     """Total per-scenario custom check verdicts that returned 0."""
+    pending_checks: int = 0
+    """Total checks (standard NLP, custom, outcome) emitted with
+    ``pending=True`` by ``trainforge run --no-judge``. Non-zero values
+    mean the run has not yet been judged; the coding agent (or any
+    downstream labeler) should fill these in and ``trainforge rescore``
+    should be run to produce the final verdict."""
 
 
 class RunResults(_StrictModel):
