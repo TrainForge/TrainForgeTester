@@ -280,9 +280,10 @@ class CheckResult(_StrictModel):
     pending: bool = False
     """``True`` when the runner ran in ``--no-judge`` mode and skipped the
     LLM evaluation for this check. Consumers (``trainforge report``,
-    diff tools, the test-gen skill) MUST treat pending checks as
-    "verdict deferred" and surface them clearly. Pending checks do not
-    count toward pass/fail in the runner summary."""
+    diff tools, the ``trainforge`` skill that drives the coding agent)
+    MUST treat pending checks as "verdict deferred" and surface them
+    clearly. Pending checks do not count toward pass/fail in the
+    runner summary."""
 
 
 class ToolCallStatus(StrEnum):

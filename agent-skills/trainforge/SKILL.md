@@ -1,17 +1,19 @@
 ---
-name: trainforge-test-gen
+name: trainforge
 description: |
-  Turn one good conversation with your AI agent into a TrainForge regression
-  test in 5 seconds. Auto-mode captures the conversation and infers sensible
-  defaults; you (the coding agent) then label the pending LLM-dependent checks
-  using the 20-NLP-consistency rubric so the user never needs to configure an
-  Anthropic / OpenAI key. Invoke when the user says "test my agent", "turn
-  this into a regression test", "generate a scenario from this transcript",
-  pastes a chat with their agent and asks how to test it, or wants to verify
-  the agent still produces the right result after a change.
+  Full TrainForge interface for the coding agent. Capture conversations as
+  regression scenarios, run them against the user's agent (no LLM key
+  needed by default), label pending checks using the 20-NLP-consistency
+  rubric, score deterministically, diff against previous runs, debug
+  failures, drive A/B prompt+model swaps, render HTML reports, set up
+  pytest / CI. The skill is the test driver; it NEVER modifies the
+  user's agent (see HARD RULE below). Invoke when the user says "test
+  my agent", "turn this into a regression test", "I changed the prompt,
+  did anything break?", "is my agent reliable?", "compare these two
+  models", or pastes a chat with their agent and asks how to test it.
 ---
 
-# TrainForge Test Generator
+# TrainForge
 
 You are turning a user's manual conversation with their AI agent into a
 TrainForge scenario JSON file. The output runs against
@@ -22,6 +24,55 @@ You also have a **standing job** for the rest of this project (see below):
 after every change the user makes to their agent's prompt, model, or tools,
 re-run the scenarios and tell them what passed or failed. Generating the
 scenario is only the first time you do this work.
+
+## HARD RULE: tests only — never modify the agent
+
+This is the most important rule in this skill. Read it twice.
+
+**You can write and edit:**
+
+- Scenario JSON files (`scenarios/*.json`).
+- Results JSON files (`results-*.json`), specifically to fill in
+  pending labels per the rubric.
+- A `tests/agent/` directory if you need one.
+- Documentation about how to use TrainForge in the user's repo
+  (README sections, contributing guides, CI yaml) — **only when the
+  user explicitly asks for it**.
+
+**You must NEVER write or edit:**
+
+- The user's agent code (the function passed to `--agent`, or the
+  HTTP service behind `--agent-url`).
+- System prompts, prompt templates, instruction files.
+- Model names or model configuration.
+- Tool definitions or tool implementations.
+- Anything that determines how the agent behaves.
+
+You are the test harness. The agent is the user's product. If a test
+fails, your job is to diagnose and recommend. The user's job is to
+decide whether to fix the agent, update the scenario, or revert the
+change. You never reach for the agent code yourself.
+
+This rule has three concrete implications:
+
+1. **On failure, never auto-fix.** Read the failure, run `git diff`,
+   form a hypothesis, surface it to the user. Stop. Do not edit the
+   prompt, change the model, or touch the agent function.
+
+2. **On suggested code changes (e.g., wrapping in `observer.node`),
+   show the pattern, ask the user to apply it.** Do not edit their
+   agent code yourself, even if it would make a test newly passable.
+
+3. **When the user explicitly asks you to change the agent**
+   ("just fix it"), step out of skill mode and acknowledge what
+   you're doing: "I'm switching off the test-driver role to edit
+   your agent. Confirm before I proceed?" Wait for their explicit
+   confirmation. Do not silently cross the boundary.
+
+If a user instruction would make you cross this line and you can't
+get explicit confirmation, refuse the action and tell them why. The
+skill stays useful exactly because it can never be the cause of an
+agent regression.
 
 ## Standing rule: auto-run tests after every agent change
 
@@ -574,6 +625,357 @@ can try it against the mock first:
   trainforge mock-agent --scenarios scenarios/<slug>.json --port 8080
 ```
 
+## Post-capture: sharpen the scenario
+
+After the first capture (`record --auto` or the manual workflow above)
+the scenario is loose by design — `may_diverge: true` everywhere, no
+outcome checks, every tool arg locked to whatever the agent did. The
+test runs, but it doesn't yet catch much. Offer the user the
+sharpening flow:
+
+> "Your scenario is captured and passing. Want to sharpen it so it
+> actually catches regressions? Three quick wins:
+> - **Add an outcome check** (verifies the END STATE: was the right
+>   thing done?)
+> - **Tighten tool arguments** (variable IDs vs contract literals)
+> - **Pin scripted turns** (legal copy, fixed confirmation strings
+>   should be `may_diverge: false`)"
+
+Offer in that order. Most leverage first.
+
+### Outcome check authoring
+
+Read the captured scenario's last user message + agent's final reply
+and the conversation as a whole. Propose ONE binary outcome check
+that verifies the end state, not the path. Examples:
+
+| Conversation goal | Good outcome check |
+|---|---|
+| Book a restaurant | "A booking was made (not just discussed)." |
+| Refund approval | "An approval request was opened; no refund executed." |
+| Find candidates | "At least 3 candidates returned, each with name + role." |
+| Cancel subscription | "The subscription was actually cancelled, not just acknowledged." |
+| Reset password | "A reset email was triggered and confirmed to the user." |
+
+Show the user:
+
+> "I'd add this outcome check: `<your proposed check>`. Want it, want
+> something different, or skip?"
+
+If accepted, edit the scenario JSON to add `outcome_checks: ["..."]`.
+Offer to add 1-2 more if the goal is multi-faceted.
+
+Outcome checks fire ONCE per scenario at the end (LLM-judged binary).
+Under `--no-judge`, you'll label them yourself using the rubric for
+custom checks: read the actual transcript, decide pass/fail, write
+the verdict.
+
+### Tool argument sharpening
+
+For each tool call in the scenario, decide which args should be
+literal (`expected: "value"`) vs type-only (no `expected`, just
+`type`). Use these heuristics:
+
+- **Strict literal (`expected: ...`):** category names, decisions,
+  amounts, fixed identifiers ("INV-7821" if it's the contract,
+  "indoor" / "outdoor", boolean flags, expected URLs.
+- **Type-only:** generated UUIDs, timestamps, session ids, anything
+  that legitimately varies per run.
+
+Show the user the args you'd loosen:
+
+> "Tool `book_table` has args `party_size=2, time='7pm',
+> seating='indoor', table='corner'`. I'd lock all four as strict
+> literals — they're part of the contract. Look right?"
+
+Edit the JSON. Default to strict; loosening should be explicit.
+
+### Pinning scripted turns
+
+If the user has agent turns that are intentionally scripted (legal
+disclaimers, fixed confirmation strings, policy-mandated wording),
+flip them to `may_diverge: false`. Detect candidates by looking for:
+
+- Turns whose `golden_response` is short and contains canonical
+  phrases like "Booking confirmed", "Reference number:", "We've sent
+  you...".
+- Turns the user explicitly calls out as "this part has to be
+  word-for-word."
+
+Show the user:
+
+> "Turn 3's reply `<short golden text>` looks scripted. Pin it to
+> exact-match (`may_diverge: false`) so any rewording breaks the
+> test?"
+
+Edit the JSON.
+
+## Workflow: A/B testing (prompt or model swap)
+
+The killer use case. The user — not you — has decided to change the
+prompt, swap the model, or refactor a tool. You drive the test
+loop; you do NOT make the agent change yourself. See the HARD RULE.
+
+```bash
+# 1. Capture baseline BEFORE the change (or use the latest results.json).
+trainforge run \
+  --scenarios scenarios/*.json \
+  --agent <agent spec> \
+  --output baseline.json \
+  --no-judge
+# Label pending checks; trainforge rescore --results baseline.json.
+
+# 2. THE USER makes the change (new prompt file, new model name in
+#    config, etc.). You do not. Wait for them to confirm the change
+#    is in place before running step 3.
+
+# 3. Re-run with the override flag(s).
+trainforge run \
+  --scenarios scenarios/*.json \
+  --agent <agent spec> \
+  --output candidate.json \
+  --no-judge \
+  --override-model claude-sonnet-4-7
+# Or: --override-prompt path/to/new-prompt.txt
+# Label pending checks the same way; trainforge rescore.
+
+# 4. Diff.
+trainforge diff \
+  --before baseline.json \
+  --after candidate.json \
+  --output regression.html
+```
+
+Then surface:
+
+- Total regressed (was-passing-now-failing) scenarios — highest signal.
+- Total fixed (was-failing-now-passing) scenarios.
+- Which specific turn changed in each regression. Open the HTML report
+  for visual diff if the user wants more detail.
+
+`--override-model X` sets `TRAINFORGE_OVERRIDE_MODEL=X` env var AND
+ContextVar for the run. The user's agent must read the env / ContextVar
+inside the function (not at module load) for the override to take
+effect. If their agent caches model at import, an override won't fire
+— tell them to refactor or use a freshly-imported subprocess.
+
+## Workflow: failure debugging
+
+When a test fails after a code change, don't just report it. Help the
+user understand why. **Diagnose only. Never auto-fix. See the HARD
+RULE at the top of this file.**
+
+1. **Read the failure.** Open `results.json`. Find the failed
+   scenario(s). Identify which turn / check broke.
+
+2. **Check recent code changes.** Run `git diff HEAD~1` (or whatever
+   commit range matters). Look for changes in:
+   - System prompts / instruction files
+   - Model name in config
+   - Tool definitions (signatures, names, return shapes)
+   - Tool implementations (return values, error handling)
+   - Agent function itself
+
+3. **Form a hypothesis.** Examples:
+   - Prompt file modified + scripted turn now fails exact-match →
+     prompt regression.
+   - Model name changed + multiple turns now produce different
+     wording → model swap regression.
+   - Tool function modified + tool arg failures appear → tool-impl
+     change.
+   - No recent code changes but test newly fails → environmental
+     issue (env vars, API keys, external service).
+
+4. **Tell the user what you found.** One sentence. Include the
+   smoking-gun file:line if possible.
+
+5. **Recommend the next move — the user decides which one.** Examples:
+   - "The prompt change at `prompts/system.txt:42` is the likely
+     cause. Options: revert that change, or update the scenario's
+     `golden_response` for turn 3 to match the new wording."
+   - "Tool `lookup_user` now returns `{user: {...}}` instead of
+     `{...}`. Options: revert the tool change, or update the
+     scenario's `expected_response` for that tool to match the new
+     shape."
+   - "No recent code changes touched the agent path. Check
+     `OPENAI_API_KEY` and any external service the agent depends on."
+
+Strict no-go list for this workflow:
+
+- ❌ Edit the user's prompt file to make the test pass.
+- ❌ Change the model name in config to roll back a regression.
+- ❌ Modify the tool implementation to match the scenario.
+- ❌ "Suggest" a fix by silently applying it.
+- ✅ Edit the SCENARIO JSON to record an intentional behavior change
+   — but only after the user confirms the new behavior is desired.
+
+If the user wants you to apply one of the fixes, that's fine — but
+they have to ask explicitly, and you should acknowledge the role
+switch out loud: "I'm stepping out of test-driver mode to edit your
+agent. Confirm?"
+
+## Workflow: consistency / reliability check
+
+Use `--runs N` to measure agent flakiness. Useful when the user asks
+"is my agent reliable?" or "does this work every time?"
+
+```bash
+trainforge run \
+  --scenarios scenarios/*.json \
+  --agent <agent spec> \
+  --output consistency.json \
+  --no-judge \
+  --runs 5
+# Label pending checks; trainforge rescore.
+```
+
+Each scenario runs 5 times. The results JSON includes
+`consistency: <pass_rate>` per scenario and an `inconsistent: true`
+flag if pass rate < 80%.
+
+Report to the user:
+
+> "Out of 5 runs per scenario, scenario X passed 3/5 (60%). That's
+> below the 80% reliability threshold. Likely sources: model
+> non-determinism on `may_diverge: true` turns, tool call ordering
+> drift, or a real flakiness bug in the agent."
+
+For agents with hot-path LLM calls (most agents), some non-determinism
+is normal. Flag scenarios where pass rate drops below 60% as real
+issues.
+
+## Workflow: visual HTML report
+
+After every run + rescore, the user has `results.json`. For richer
+visual inspection (per-turn diffs, golden vs actual side-by-side,
+failure highlights, consistency summary), generate the HTML report:
+
+```bash
+trainforge report --results results.json --output report.html
+open report.html
+```
+
+Offer this proactively after any rescore that produced failures or
+when the user asks "show me the details" / "what changed?" Don't
+generate one for every clean run — it's noise.
+
+## Workflow: multi-agent / node assertions
+
+For agents that use sub-agents or a graph (LangGraph, OpenAI Agents
+SDK handoffs, custom orchestrators), scenarios can assert that
+specific sub-agents fired during a turn.
+
+Detect when this applies: the user's agent code imports `langgraph`,
+`crewai`, uses OpenAI Agents SDK handoffs, or has explicit
+multi-agent orchestration. If so, offer:
+
+> "Your agent uses sub-agents. Want to add a node_assertion that
+> verifies the `refund_handler` sub-agent fired on this turn — and
+> didn't fire on simple greeting turns?"
+
+To wire it up — note the split: **the scenario JSON is yours to
+edit; the agent code is the user's**:
+
+1. The user's agent must wrap sub-agent calls in
+   `with trainforge.observer.node("name", args={...}): ...`. **You
+   do not write that wrap into their code.** Show them the pattern
+   and ask them to apply it. If they want you to do it, follow the
+   HARD RULE: acknowledge the role switch and get explicit confirmation
+   before touching agent code.
+2. You write `node_assertions: [{node_name: "refund_handler",
+   must_fire: true}]` into the scenario JSON (test data — yours).
+3. Negative assertions: `{node_name: "auto_approve", must_fire: false}`
+   for guard rails ("never auto-approve large refunds"). Also test
+   data — yours.
+
+Show the user the observer-wrap pattern (for them to apply):
+
+```python
+from trainforge import observer
+
+async def run_agent(messages):
+    with observer.node("intent_classifier"):
+        intent = classify(messages)
+    if intent == "refund":
+        with observer.node("refund_handler", args={"invoice_id": ...}):
+            return await handle_refund(messages)
+```
+
+Important: `node_assertions` only fire under `--agent` (in-process)
+transport. Over `--agent-url` (HTTP), the runner has no way to read
+in-process state. If the user is HTTP-only, skip this workflow.
+
+## Workflow: pytest integration
+
+When the user mentions CI, pytest, or wants tests in their test
+suite, drive the pytest plugin path.
+
+```bash
+pip install "trainforge[pytest]"
+```
+
+Configure in `pyproject.toml`:
+
+```toml
+[tool.pytest.ini_options]
+trainforge_agent = "my_module:my_agent"
+trainforge_scenarios_dir = "tests/agent/scenarios"
+```
+
+Then `pytest tests/agent/` runs every scenario as one parametrized
+pytest case. Failures show the TrainForge diagnostic in the
+assertion message.
+
+Limitations to flag to the user:
+
+- One run per scenario (`runs > 1` consistency scoring is CLI-only).
+- In-process only (no `--agent-url`).
+- No `--no-judge` mode in the pytest plugin yet; the user needs
+  `OPENAI_API_KEY` + `OPENAI_API_URL` set for any scenario with
+  LLM-judged checks. (When `--no-judge` lands in the plugin, this
+  caveat will be removed.)
+
+## Workflow: CI setup snippet
+
+When the user asks for CI integration, generate a GitHub Actions
+snippet adapted to their setup:
+
+```yaml
+# .github/workflows/agent-tests.yml
+name: Agent regression tests
+
+on: [push, pull_request]
+
+jobs:
+  trainforge:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -e . trainforge
+      - env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_API_URL: ${{ secrets.OPENAI_API_URL }}
+        run: |
+          for f in scenarios/*.json; do
+            trainforge run \
+              --scenarios "$f" \
+              --agent my_module:my_agent \
+              --output "results-$(basename "$f" .json).json"
+          done
+```
+
+CI runs use the configured-key path (drop `--no-judge`) since there's
+no coding agent in the CI loop to label pending checks. Document
+this trade-off clearly: friction-free coding-agent-as-judge is for
+local dev; CI needs a real LLM key.
+
+For GitLab CI / CircleCI / etc., generate the equivalent. The shape
+is always the same: install, set OPENAI_API_KEY + OPENAI_API_URL,
+run the for-loop.
+
 ## Default postures (Alex's opinion, baked in)
 
 - **`ordered: false` by default.** Most tool loops in real agents are
@@ -589,22 +991,85 @@ can try it against the mock first:
 - **Write to the user's repo, not to a cloud.** Tests are code. They live in
   git, version with the agent, and travel with the team.
 
-## What this skill does not do
+## What this skill DOES cover
 
-- It does not invent tool calls the agent did not make. If the transcript
-  doesn't show a tool call, the scenario does not assert one.
-- It does not invent arguments. If the user says "the amount should be 950"
-  but the transcript shows the agent calling with amount 1000, the scenario
-  records what the agent *actually did* (so the test fails until the agent
-  is fixed). Ask the user which one is the source of truth before deciding.
-- It does not invent test data. It does not call an LLM as part of
-  generating the scenario. The scenario JSON is produced by reading the
-  transcript and asking the user, nothing else.
-- It *does* invoke `trainforge run` and `trainforge diff` automatically
-  after agent changes, per the standing rule at the top of this file —
-  provided the coding agent has terminal access. If the coding agent does
-  not have terminal access, it should print the exact commands instead and
-  ask the user to run them.
+Every feature shipped in this repo. Specifically:
+
+- **Capture**: `trainforge record --auto`, paste-transcript fallback.
+- **Run**: `trainforge run` with `--no-judge` (default) or configured
+  LLM keys (CI path), `--override-model`, `--override-prompt`,
+  `--parallel`, `--runs N`, `--timeout`.
+- **Label**: per-check verdicts via the 20-NLP rubric (coding agent
+  reads results.json, fills in pending checks).
+- **Score**: `trainforge rescore` for deterministic re-aggregation.
+- **Diff**: `trainforge diff` for before/after comparison (A/B
+  testing workflow above).
+- **Report**: `trainforge report` for HTML output (offer proactively
+  on failures or when user asks).
+- **Standing rule**: re-test on every agent change.
+- **Sharpening**: post-capture outcome checks, tool arg constraints,
+  scripted-turn pinning.
+- **Multi-agent**: `node_assertions` for LangGraph / OpenAI Agents
+  SDK / Anthropic Skills users.
+- **Failure debugging**: read results, check `git diff`, form a
+  hypothesis, suggest next move.
+- **Consistency**: `--runs N` for flakiness measurement.
+- **Pytest integration**: `pip install "trainforge[pytest]"` for
+  test-suite users.
+- **CI**: GitHub Actions / GitLab CI snippets on request.
+
+## What this skill does NOT do
+
+**The HARD RULE in one sentence: the skill is a test driver. The
+agent is the user's product. The skill never touches the product.**
+
+- **It never edits the agent.** No prompts, no model config, no
+  tool definitions, no tool implementations, no agent function code.
+  Even "obvious" fixes — never apply silently. Always diagnose +
+  recommend; the user decides.
+- **It never auto-applies the "fix" for a failing test.** If a test
+  regresses because the prompt changed, the skill says "the prompt
+  change is the cause; revert it OR update the scenario to match
+  the new behavior." It doesn't pick.
+- **It does not invent tool calls the agent did not make.** If the
+  transcript doesn't show a tool call, the scenario doesn't assert
+  one.
+- **It does not invent arguments.** If the user says "the amount
+  should be 950" but the transcript shows the agent calling with
+  amount 1000, the scenario records what the agent *actually did*.
+  Ask the user which one is the source of truth before deciding.
+- **It does not silently update scenarios when tests fail.** On
+  regression, surface the failure and let the user decide whether
+  to update the scenario or revert the agent change.
+- **It does not invent LLM-judged verdicts.** The coding agent
+  labels pending checks using the rubric — applying the rule, not
+  inventing one. If the rule is ambiguous on a specific case, fail
+  the check with a brief explanation so the user can sharpen the
+  scenario.
+- **It does not deploy infrastructure.** No server, no Docker, no
+  Kubernetes. The agent is just a Python function or HTTP endpoint;
+  TrainForge calls it. Nothing to provision.
+- **It does not require API keys for the default flow.** The
+  `--no-judge` + coding-agent-as-judge path needs zero external
+  credentials. Configured keys are only for CI runs.
+
+### The role-switch escape hatch
+
+If the user explicitly wants you to fix their agent ("just fix the
+prompt", "update the model name for me"), step out of skill mode
+loudly:
+
+> "I'm stepping out of test-driver mode to modify your agent. The
+> change I'd make is: `<concrete change>`. Confirm before I proceed?"
+
+Wait for explicit confirmation. Then make the change. After the
+change, return to test-driver mode and re-run the scenarios. Do
+not silently cross the boundary.
+
+This escape hatch is for users who explicitly opt in. It is NOT
+the default. If you're not sure whether the user is asking for a
+test-driver action or an agent edit, default to test-driver and
+ask.
 
 ## Examples
 
