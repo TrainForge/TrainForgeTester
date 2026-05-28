@@ -8,6 +8,16 @@ for the few things only they can answer (``may_diverge`` per turn,
 ``expected_outcome``, ``outcome_checks``) and a valid scenario JSON is
 written to disk.
 
+With ``--auto``, the post-session prompts are skipped entirely. Defaults:
+
+- ``may_diverge: true`` on every agent turn (lenient — the 20 standard
+  NLP-consistency checks judge whether the agent rephrased acceptably).
+- ``outcome_checks: []`` (no outcome judge; user can add later).
+- Auto-generated scenario id, name, and ``expected_outcome`` summary.
+
+Designed for the 5-second hackathon path: chat, save, done. User can
+sharpen the JSON later if they want stricter checks.
+
 Implemented as a lightweight ``input()`` prompt loop so there's no
 terminal-UX dependency. Single-line input is read after each prompt;
 tool calls are displayed inline so the user sees exactly what the
@@ -18,6 +28,7 @@ from __future__ import annotations
 import asyncio
 import json
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -192,11 +203,16 @@ def run_record_loop(
     agent_spec: str,
     output_path: str,
     timeout_seconds: float = 30.0,
+    auto: bool = False,
 ) -> int:
     """Drive the REPL; write the scenario JSON to ``output_path`` on save.
 
     Return code is 0 on save, 1 on abort. The caller (CLI) maps this to
     the process exit code.
+
+    When ``auto=True`` the post-session prompts are skipped on
+    ``:save``: every agent turn defaults to ``may_diverge: true`` and
+    the scenario header is auto-generated.
     """
     transport = InProcessTransport(
         agent=agent_callable, timeout_seconds=timeout_seconds, source=agent_spec
@@ -207,6 +223,9 @@ def run_record_loop(
     print("  :save     finalize and write the scenario file")
     print("  :quit     exit without saving")
     print("  :help     show this message")
+    if auto:
+        print()
+        print("  [auto mode: :save will skip the post-session prompts]")
     print()
 
     while True:
@@ -234,6 +253,8 @@ def run_record_loop(
             if not session.turns:
                 print("nothing to save yet")
                 continue
+            if auto:
+                return _auto_finalize_and_save(session, output_path)
             return _finalize_and_save(session, output_path)
 
         # Otherwise: treat as a user message.
@@ -250,6 +271,73 @@ def run_record_loop(
         if captured.tool_calls:
             print(f"agent> [{len(captured.tool_calls)} tool call(s) executed]")
         print(f"agent> {captured.agent_text}")
+
+
+def _auto_finalize_and_save(session: _RecordSession, output_path: str) -> int:
+    """Zero-question save path. Used by ``trainforge record --auto``.
+
+    Sensible defaults:
+
+    - ``may_diverge: true`` on every agent turn. The 20 standard
+      NLP-consistency checks judge each turn at run time; users can
+      tighten any specific turn to ``may_diverge: false`` later by
+      editing the JSON.
+    - ``outcome_checks: []`` (no outcome judge by default; user can add).
+    - Scenario id / name / ``expected_outcome`` auto-generated.
+
+    The point: chat, ``:save``, run. No questions. Iterate later.
+    """
+    now = datetime.now()
+    timestamp_id = now.strftime("%Y%m%d-%H%M%S")
+    timestamp_display = now.strftime("%Y-%m-%d %H:%M")
+
+    # Use the final agent reply (first 80 chars) as a human-readable
+    # placeholder for expected_outcome. It's not a real outcome
+    # description, but it gives downstream readers a hint of what
+    # happened without an LLM in the loop.
+    final_agent_text = (
+        session.turns[-1].agent_text if session.turns else ""
+    ).strip()
+    expected_outcome = (
+        f"Recorded session — final reply: {final_agent_text[:80]}..."
+        if len(final_agent_text) > 80
+        else f"Recorded session — final reply: {final_agent_text}"
+    ) or f"Recorded session ({timestamp_display})"
+
+    scenario_doc = _materialize_scenario(
+        session,
+        scenario_id=f"sc-auto-{timestamp_id}",
+        name=f"Recorded session {timestamp_display}",
+        description=(
+            "Auto-captured by `trainforge record --auto`. "
+            "Every agent turn defaults to may_diverge=true (the 20 "
+            "standard NLP-consistency checks judge each reply). Edit "
+            "this file to tighten specific turns to exact-match or to "
+            "add outcome_checks."
+        ),
+        tags=["auto"],
+        expected_outcome=expected_outcome,
+        outcome_checks=[],
+        per_turn_may_diverge=[True] * len(session.turns),
+        per_turn_checks=[[] for _ in session.turns],
+    )
+
+    out = Path(output_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(scenario_doc, indent=2), encoding="utf-8")
+    print()
+    print(f"wrote {output_path}")
+    print(f"  scenario id:   sc-auto-{timestamp_id}")
+    print(f"  turns:         {len(session.turns)}")
+    print(f"  may_diverge:   true on every agent turn (edit to tighten)")
+    print(f"  outcome_checks: [] (edit to add)")
+    print()
+    print("Run it with:")
+    print(
+        f"  trainforge run --agent <your agent spec> --scenarios {output_path} "
+        f"--output results.json"
+    )
+    return 0
 
 
 def _finalize_and_save(session: _RecordSession, output_path: str) -> int:

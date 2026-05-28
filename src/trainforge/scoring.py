@@ -16,6 +16,15 @@ but took a weird path.)
 A run FAILs otherwise (any outcome check fails, or scenario aborted with
 agent_unreachable mid-way).
 
+Pending checks:
+    When the runner runs in ``--no-judge`` mode, LLM-dependent checks
+    are emitted with ``pending=True`` instead of a real verdict. Pending
+    checks are SKIPPED in the cleanliness math — the coding agent (or
+    any downstream labeler) is expected to fill them in, after which
+    ``trainforge rescore`` re-runs this module to produce the real
+    verdict. Without that step the scores reflect deterministic checks
+    only.
+
 Consistency:
     Per-scenario consistency = passing_runs / N
     Flag INCONSISTENT if consistency < 80% AND runs > 1.
@@ -53,7 +62,9 @@ def classify_scenario_run(
     if outcome.status == OutcomeStatus.AGENT_UNREACHABLE:
         return ScenarioStatus.AGENT_UNREACHABLE
 
-    outcome_ok = outcome.status == OutcomeStatus.EVALUATED and all(c.passed for c in outcome.checks)
+    outcome_ok = outcome.status == OutcomeStatus.EVALUATED and all(
+        c.passed for c in outcome.checks if not c.pending
+    )
     turns_clean = all(_turn_is_clean(t) for t in turn_results)
 
     if outcome_ok and turns_clean:
@@ -90,6 +101,7 @@ def summarize(scenarios: list[ScenarioResult]) -> dict[str, int | float]:
     exact_match_failures = 0
     standard_check_failures = 0
     custom_check_failures = 0
+    pending_checks = 0
 
     for sc in scenarios:
         pass_rates.append(sc.consistency)
@@ -113,11 +125,18 @@ def summarize(scenarios: list[ScenarioResult]) -> dict[str, int | float]:
                 if turn.exact_match is False:
                     exact_match_failures += 1
                 for sr in turn.standard_check_results:
-                    if not sr.passed:
+                    if sr.pending:
+                        pending_checks += 1
+                    elif not sr.passed:
                         standard_check_failures += 1
                 for c in turn.checks:
-                    if not c.passed:
+                    if c.pending:
+                        pending_checks += 1
+                    elif not c.passed:
                         custom_check_failures += 1
+            for c in run.outcome.checks:
+                if c.pending:
+                    pending_checks += 1
 
     pass_rate = (passed / total) if total else 0.0
     overall_consistency = (sum(pass_rates) / len(pass_rates)) if pass_rates else 0.0
@@ -135,6 +154,7 @@ def summarize(scenarios: list[ScenarioResult]) -> dict[str, int | float]:
         "exact_match_failures": exact_match_failures,
         "standard_check_failures": standard_check_failures,
         "custom_check_failures": custom_check_failures,
+        "pending_checks": pending_checks,
     }
 
 
@@ -161,12 +181,16 @@ def _turn_is_clean(turn: TurnResult) -> bool:
             return False
     if turn.may_diverge:
         for sr in turn.standard_check_results:
+            if sr.pending:
+                continue
             if not sr.passed:
                 return False
     else:
         if turn.exact_match is not True:
             return False
     for c in turn.checks:
+        if c.pending:
+            continue
         if not c.passed:
             return False
     return True

@@ -12,6 +12,7 @@ the in-process expansions:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import sys
@@ -162,6 +163,22 @@ def _load_dotenv_from_tree() -> None:
         "shorten total wall time but may trip judge-LLM rate limits."
     ),
 )
+@click.option(
+    "--no-judge",
+    "no_judge",
+    is_flag=True,
+    default=False,
+    help=(
+        "Skip every LLM-dependent evaluation. Per-turn custom checks, "
+        "the 20 standard NLP-consistency checks, and outcome checks are "
+        "emitted with pending=True instead of a real verdict. Run the "
+        "agent, capture actual vs golden, evaluate tool calls "
+        "deterministically. After running, the coding agent (or any "
+        "downstream labeler) fills in pending verdicts, then run "
+        "`trainforge rescore` for the deterministic summary. Zero LLM "
+        "credentials required."
+    ),
+)
 @click.option("--output", "output_path", type=click.Path(dir_okay=False), required=True, help="Where to write results.json.")
 def run_cmd(
     scenarios_path: str,
@@ -175,6 +192,7 @@ def run_cmd(
     runs: int,
     timeout_seconds: float,
     parallel: int,
+    no_judge: bool,
     output_path: str,
 ) -> None:
     """Run scenarios against an agent (HTTP endpoint OR in-process callable)."""
@@ -219,7 +237,7 @@ def run_cmd(
         agent = HttpTransport(url=agent_url, timeout_seconds=timeout_seconds)
         transport_label = agent_url
 
-    runner = ScenarioRunner(agent=agent, llm=llm)
+    runner = ScenarioRunner(agent=agent, llm=llm, no_judge=no_judge)
 
     override_prompt = None
     if override_prompt_path is not None:
@@ -313,6 +331,7 @@ def _print_failure_highlights(scenario_results) -> None:
     show (tool-call failures, exact-match mismatches, custom-check fails).
     """
     interesting: list[str] = []
+    pending_total = 0
     for sc in scenario_results:
         for run in sc.runs:
             for turn in run.turns:
@@ -332,16 +351,22 @@ def _print_failure_highlights(scenario_results) -> None:
                         f"actual reply did not match golden verbatim"
                     )
                 for c in turn.checks:
-                    if not c.passed:
+                    if c.pending:
+                        pending_total += 1
+                    elif not c.passed:
                         interesting.append(f"  ✗ custom check failed: {c.check}")
                 for sr in turn.standard_check_results:
-                    if not sr.passed:
+                    if sr.pending:
+                        pending_total += 1
+                    elif not sr.passed:
                         interesting.append(
                             f"  ✗ standard check {sr.id} failed"
                             + (f" -- {sr.explanation}" if sr.explanation else "")
                         )
             for c in run.outcome.checks:
-                if not c.passed:
+                if c.pending:
+                    pending_total += 1
+                elif not c.passed:
                     interesting.append(f"  ✗ outcome check failed: {c.check}")
     if interesting:
         click.echo("")
@@ -351,6 +376,13 @@ def _print_failure_highlights(scenario_results) -> None:
             click.echo(line)
         if len(interesting) > 12:
             click.echo(f"  ... (+{len(interesting) - 12} more in results.json)")
+    if pending_total > 0:
+        click.echo("")
+        click.echo(
+            f"{pending_total} check(s) pending judgment "
+            "(--no-judge mode). Label them in the results JSON and run "
+            "`trainforge rescore` for the final verdict."
+        )
 
 
 def _short_args(args: dict, max_chars: int = 60) -> str:
@@ -455,6 +487,111 @@ async def _run_all_scenarios(
 
 
 # ---------------------------------------------------------------------------
+# trainforge rescore
+# ---------------------------------------------------------------------------
+
+
+@cli.command("rescore")
+@click.option(
+    "--results",
+    "results_path",
+    type=click.Path(exists=True, dir_okay=False),
+    required=True,
+    help=(
+        "Labeled results.json (produced by `trainforge run --no-judge` then "
+        "edited by the coding agent to fill in pending verdicts)."
+    ),
+)
+@click.option(
+    "--output",
+    "output_path",
+    type=click.Path(dir_okay=False),
+    default=None,
+    help=(
+        "Where to write the re-scored results JSON. Defaults to overwriting "
+        "the input file in place."
+    ),
+)
+def rescore_cmd(results_path: str, output_path: str | None) -> None:
+    """Re-aggregate scores over a labeled results.json.
+
+    Used after `trainforge run --no-judge`: the coding agent labels the
+    pending checks (writes `passed` + `explanation`, flips `pending` to
+    False) and this command re-runs the deterministic scoring pass to
+    produce the official per-scenario verdict + run summary.
+
+    Refuses to run if any check is still pending — those need to be
+    labeled first.
+    """
+    from trainforge.scoring import (
+        aggregate_consistency,
+        classify_scenario_run,
+        summarize,
+    )
+
+    raw = json.loads(Path(results_path).read_text(encoding="utf-8"))
+    results = load_results(results_path)
+
+    # Refuse if anything is still pending — the user (or coding agent)
+    # hasn't finished labeling yet.
+    pending_total = 0
+    for sc in results.scenarios:
+        for run in sc.runs:
+            for turn in run.turns:
+                pending_total += sum(1 for c in turn.checks if c.pending)
+                pending_total += sum(1 for c in turn.standard_check_results if c.pending)
+            pending_total += sum(1 for c in run.outcome.checks if c.pending)
+    if pending_total > 0:
+        raise click.ClickException(
+            f"{pending_total} check(s) still pending. Label them in "
+            f"{results_path} (set passed=true/false, explanation=..., "
+            "pending=false) before rescoring."
+        )
+
+    # Re-classify each run from the labeled turn / outcome results, then
+    # re-aggregate the scenario consistency.
+    rescored_scenarios = []
+    for sc in results.scenarios:
+        new_runs = []
+        for run in sc.runs:
+            new_status = classify_scenario_run(list(run.turns), run.outcome)
+            new_runs.append(run.model_copy(update={"status": new_status}))
+        consistency, inconsistent = aggregate_consistency(new_runs)
+        rescored_scenarios.append(
+            sc.model_copy(
+                update={
+                    "runs": new_runs,
+                    "consistency": consistency,
+                    "inconsistent": inconsistent,
+                }
+            )
+        )
+
+    new_summary = summarize(rescored_scenarios)
+
+    from trainforge.schema import RunResults, RunSummary, dump_results
+
+    rescored = RunResults(
+        version=results.version,
+        config=results.config,
+        summary=RunSummary.model_validate(new_summary),
+        scenarios=rescored_scenarios,
+    )
+
+    target = output_path or results_path
+    dump_results(rescored, target)
+
+    s = rescored.summary
+    click.echo(
+        f"{s.passed}/{s.total_scenarios} passed ({s.pass_rate * 100:.0f}%), "
+        f"partial={s.partial}, failed={s.failed}, unreachable={s.unreachable}"
+    )
+    click.echo(f"wrote {target}")
+    if s.failed or s.unreachable:
+        sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
 # trainforge record (capture mode)
 # ---------------------------------------------------------------------------
 
@@ -481,7 +618,17 @@ async def _run_all_scenarios(
     show_default=True,
     help="Per-turn agent timeout in seconds.",
 )
-def record_cmd(agent_spec: str, output_path: str, timeout_seconds: float) -> None:
+@click.option(
+    "--auto",
+    is_flag=True,
+    default=False,
+    help=(
+        "Zero-question save: on :save, skip all post-session prompts. "
+        "may_diverge=true on every agent turn, outcome_checks=[], auto "
+        "scenario id/name. Edit the JSON later to tighten any specific turn."
+    ),
+)
+def record_cmd(agent_spec: str, output_path: str, timeout_seconds: float, auto: bool) -> None:
     """Capture mode: chat with your agent, write a scenario file."""
     try:
         callable_ = resolve_in_process_agent(agent_spec)
@@ -495,6 +642,7 @@ def record_cmd(agent_spec: str, output_path: str, timeout_seconds: float) -> Non
         agent_spec=agent_spec,
         output_path=output_path,
         timeout_seconds=timeout_seconds,
+        auto=auto,
     )
     if exit_code != 0:
         sys.exit(exit_code)
