@@ -1,17 +1,19 @@
 ---
-name: trainforge-test-gen
+name: trainforge
 description: |
-  Turn one good conversation with your AI agent into a TrainForge regression
-  test in 5 seconds. Auto-mode captures the conversation and infers sensible
-  defaults; you (the coding agent) then label the pending LLM-dependent checks
-  using the 20-NLP-consistency rubric so the user never needs to configure an
-  Anthropic / OpenAI key. Invoke when the user says "test my agent", "turn
-  this into a regression test", "generate a scenario from this transcript",
-  pastes a chat with their agent and asks how to test it, or wants to verify
-  the agent still produces the right result after a change.
+  Full TrainForge interface for the coding agent. Capture conversations as
+  regression scenarios, run them against the user's agent (no LLM key
+  needed by default), label pending checks using the 20-NLP-consistency
+  rubric, score deterministically, diff against previous runs, debug
+  failures, drive A/B prompt+model swaps, render HTML reports, set up
+  pytest / CI. The skill is the test driver; it NEVER modifies the
+  user's agent (see HARD RULE below). Invoke when the user says "test
+  my agent", "turn this into a regression test", "I changed the prompt,
+  did anything break?", "is my agent reliable?", "compare these two
+  models", or pastes a chat with their agent and asks how to test it.
 ---
 
-# TrainForge Test Generator
+# TrainForge
 
 You are turning a user's manual conversation with their AI agent into a
 TrainForge scenario JSON file. The output runs against
