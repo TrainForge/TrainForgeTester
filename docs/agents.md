@@ -94,7 +94,7 @@ Request:
   "messages": [
     {"role": "user",  "content": "..."},
     {"role": "agent", "content": "..."},
-    {"role": "agent", "content": "", "tool_calls": [
+    {"role": "agent", "content": null, "tool_calls": [
       {"id": "call_1", "name": "check_weather", "arguments": {"when": "tonight"}}
     ]},
     {"role": "tool",  "tool_call_id": "call_1", "name": "check_weather",
@@ -114,6 +114,12 @@ At least one of `response` or `tool_calls` must be present in the
 response. Agents without tool support can keep returning
 `{"response": "..."}` only — scenarios without `tool_loops` are
 fully backward-compatible.
+
+On a tool-round agent message (the third message in the request above:
+the agent emitted `tool_calls`), `content` is JSON `null`, not an empty
+string. The runner sends the golden history this way verbatim. Agent
+implementations that strictly require a string should treat `null`
+the same as `""`.
 
 ### Implementation notes
 

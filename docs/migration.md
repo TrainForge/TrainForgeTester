@@ -20,14 +20,16 @@ under TrainForge 0.1 (`version: "2.0"`):
 
 ## Migration script
 
-For a one-off port, this is enough:
+For a one-off port, this is enough. Using `perl -pi -e` instead of
+`sed -i` because the in-place flag syntax differs between BSD/macOS
+sed and GNU sed; Perl is the same on every platform that has it.
 
 ```bash
 # Bump versions
-sed -i '' 's/"version": "1.0"/"version": "2.0"/g' scenarios/*.json
+perl -pi -e 's/"version": "1.0"/"version": "2.0"/g' scenarios/*.json
 
 # Rename role
-sed -i '' 's/"role": "customer"/"role": "user"/g' scenarios/*.json
+perl -pi -e 's/"role": "customer"/"role": "user"/g' scenarios/*.json
 ```
 
 Then load with `trainforge run --scenarios ...` and fix any

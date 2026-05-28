@@ -71,7 +71,7 @@ fields are rejected at load time, not silently ignored.
 | Field | Required | Description |
 |---|---|---|
 | `role` | yes | Must be `"agent"`. |
-| `golden_response` | yes | The text the agent is expected to produce. Non-empty. |
+| `golden_response` | yes | The text the agent is expected to produce. Empty string is allowed by the schema, but discouraged: an empty golden makes `may_diverge: false` exact-match trivially fail against any non-empty reply, and the LLM judge for `may_diverge: true` has nothing to compare against. |
 | `tool_loops` | optional | Tool calls that must happen before the text reply. See below. |
 | `checks` | optional | Per-turn natural-language binary checks (LLM-evaluated). |
 | `may_diverge` | optional | `false` (default) = exact-match. `true` = 20 NLP checks + custom. |
